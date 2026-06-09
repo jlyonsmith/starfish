@@ -1,0 +1,19 @@
+[package]
+name = "starfish"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "starfish-admin"
+path = "src/bin/starfish_admin.rs"
+
+[[bin]]
+name = "starfishd"
+path = "src/bin/starfishd.rs"
+
+[[bin]]
+name = "starfish-agent"
+path = "src/bin/starfish_agent.rs"
