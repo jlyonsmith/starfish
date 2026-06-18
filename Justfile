@@ -1,9 +1,28 @@
+# list all available recipes
 list:
   just --list
 
+# Create the PostgreSQLdatabase
 create-db:
   ./scripts/create-db.fish
 
+# Run all generation recipes
+gen-all:
+    just gen-msg
+    just odin_ui/gen-all
+
+# Test by sta
+test:
+    #!/usr/bin/env fish
+    nats-server -DV &
+    # Start a test program here
+    kill $last_pid
+
+# Generate Geno message sources
+gen-msg:
+    geno --output-path sf_admin_msg/src/msgs.rs --format rust-serde msgs/admin.geno
+
+# Release a new version
 release OPERATION='incrPatch':
   #!/usr/bin/env fish
   function info
@@ -88,6 +107,7 @@ release OPERATION='incrPatch':
   info "Finished release of '"$name"' on branch '"$branch"'. You can publish the crate."
   exit 0
 
+# Delete the last tag (used for rolling back a release)
 del-last-tag:
   #!/usr/bin/env fish
   set tagName (cat "scratch/version.tag.txt")

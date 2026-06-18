@@ -1,28 +1,3 @@
-[package]
-name = "starfish"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-anyhow = "1.0.102"
-async-nats = "0.49.1"
-bytes = "1.11.1"
-clap = { version = "4", features = ["derive"] }
-env_logger = "0.11.10"
-futures-util = "0.3.32"
-log = { version = "0.4.32", features = ["serde"] }
-serde_json = "1.0.150"
-tokio = { version = "1.52.3", features = ["full"] }
-tokio-stream = { version = "0.1.18", features = ["full"] }
-
-[[bin]]
-name = "starfish-admin"
-path = "src/bin/starfish_admin.rs"
-
-[[bin]]
-name = "starfishd"
-path = "src/bin/starfishd.rs"
-
-[[bin]]
-name = "starfish-agent"
-path = "src/bin/starfish_agent.rs"
+[workspace]
+members = ["starfishd", "starfish_admin", "starfish_agent", "sf_admin_msg"]
+resolver = "3"

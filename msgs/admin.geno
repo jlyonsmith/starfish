@@ -1,0 +1,20 @@
+// Admin messages
+
+#![format = 1]
+
+// Add user
+struct UserAdd {
+    email: string,
+    alias: string,
+    firstName: string,
+    lastName: string,
+}
+
+struct UserAddResponse {
+    id: i64,
+}
+
+// Delete user
+struct UserRemove {
+    alias: string,
+}
