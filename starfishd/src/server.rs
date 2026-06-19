@@ -8,7 +8,7 @@ use sf_admin_msg as msg;
 use tokio::signal;
 use tokio_postgres::{NoTls, error::SqlState};
 use tokio_stream::StreamExt;
-use tokio_util::bytes::Bytes;
+use tokio_util::{bytes::Bytes, sync::CancellationToken};
 
 pub struct Server {
     config: ServerConfig,
@@ -32,30 +32,37 @@ impl Server {
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
-        log::info!("Connecting to NATS server {}", self.config.nats_server);
+        // Extract any credentials from the URL and connect with a credential-free URL.
+        let username = self.config.nats_server.username().to_string();
+        let password = self.config.nats_server.password().map(str::to_string);
+        let mut nats_server = self.config.nats_server.clone();
+        nats_server.set_username("").ok();
+        nats_server.set_password(None).ok();
+
+        log::info!("Connecting to NATS server {}", nats_server);
         log::info!("Connecting to SQL server {}", self.config.sql_server);
 
-        let server_addr = ServerAddr::from_url(self.config.nats_server.clone())?;
-        let nats_client = ConnectOptions::new()
-            .name(env!("CARGO_PKG_NAME"))
-            .user_and_password(
-                self.config.nats_user.clone(),
-                self.config.nats_password.clone(),
-            )
+        let server_addr = ServerAddr::from_url(nats_server.clone())?;
+        let mut connect_options = ConnectOptions::new().name(env!("CARGO_PKG_NAME"));
+        if !username.is_empty() {
+            connect_options =
+                connect_options.user_and_password(username, password.unwrap_or_default());
+        }
+        let nats_client = connect_options
             .connect(server_addr)
             .await
-            .context(format!(
-                "Unable to connect to NATS server {}",
-                self.config.nats_server
-            ))?;
+            .context(format!("Unable to connect to NATS server {}", nats_server))?;
         let (sql_client, sql_connection) =
             tokio_postgres::connect(&self.config.sql_server.to_string(), NoTls)
                 .await
                 .context("Unable to connect to SQL server")?;
 
+        let cancel_token = CancellationToken::new();
+        let cancel_token_clone = cancel_token.clone();
         tokio::spawn(async move {
             if let Err(e) = sql_connection.await {
-                log::debug!("Connection error: {}", e);
+                log::error!("Database disconnected: {}", e);
+                cancel_token_clone.cancel();
             }
         });
 
@@ -121,11 +128,9 @@ impl Server {
                         log::debug!("Delete user request received: {:?}", message);
                     }
                 }
-                // TODO: Use a CancellationToken to trigger this loop to exit
-                // _ = &mut sql_connection => {
-                //     log::error!("Database disconnected");
-                //     break;
-                // }
+                _ = cancel_token.cancelled() => {
+                    break;
+                }
                 _ = signal::ctrl_c() => {
                     log::info!("Stopping server");
                     break;

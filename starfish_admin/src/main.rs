@@ -11,17 +11,9 @@ struct AdminArgs {
     #[command(subcommand)]
     entity: Entity,
 
-    /// Address of the game NATS server
+    /// Address of the NATS server.  Can include a user name and password.  Defaults to `nats://localhost:4222`.
     #[arg(long, default_value = "nats://localhost:4222")]
     pub nats_server: Url,
-
-    /// NATS user
-    #[arg(long)]
-    pub nats_user: Option<String>,
-
-    /// NATS user password
-    #[arg(long)]
-    pub nats_password: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -77,18 +69,24 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let server_addr = ServerAddr::from_url(args.nats_server.clone())?;
+    // Extract any credentials from the URL and connect with a credential-free URL.
+    let mut nats_server = args.nats_server.clone();
+    let username = nats_server.username().to_string();
+    let password = nats_server.password().map(str::to_string);
+    nats_server.set_username("").ok();
+    nats_server.set_password(None).ok();
+
+    let server_addr = ServerAddr::from_url(nats_server.clone())?;
     let mut nats_options = ConnectOptions::new().name(env!("CARGO_PKG_NAME"));
 
-    if let (Some(user), Some(password)) = (args.nats_user, args.nats_password) {
-        // Both are present — use user_str and password_str here
-        nats_options = nats_options.user_and_password(user, password);
+    if !username.is_empty() {
+        nats_options = nats_options.user_and_password(username, password.unwrap_or_default());
     }
 
-    let nats_client = nats_options.connect(server_addr).await.context(format!(
-        "Unable to connect to NATS server {}",
-        args.nats_server
-    ))?;
+    let nats_client = nats_options
+        .connect(server_addr)
+        .await
+        .context(format!("Unable to connect to NATS server {}", nats_server))?;
 
     match &args.entity {
         Entity::User { op } => match op {

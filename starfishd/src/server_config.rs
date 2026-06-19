@@ -8,8 +8,6 @@ use url::Url;
 pub struct ServerConfig {
     pub log_level: LevelFilter,
     pub nats_server: Url,
-    pub nats_user: String,
-    pub nats_password: String,
     pub sql_server: Url,
 }
 
@@ -31,11 +29,6 @@ impl ServerConfig {
                 .clone()
                 .unwrap_or((*DEFAULT_NATS_SERVER).clone())
                 .clone(),
-            nats_user: config_file.nats_user.clone().unwrap_or(String::default()),
-            nats_password: config_file
-                .nats_password
-                .clone()
-                .unwrap_or(String::default()),
             sql_server: config_file
                 .sql_server
                 .clone()

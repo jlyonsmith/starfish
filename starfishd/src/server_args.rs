@@ -14,14 +14,6 @@ pub struct ServerArgs {
     #[arg(long)]
     pub nats_server: Option<Url>,
 
-    /// NATS user
-    #[arg(long)]
-    pub nats_user: Option<String>,
-
-    /// NATS user password
-    #[arg(long)]
-    pub nats_password: Option<String>,
-
     /// Address of the game PostgreSQL server
     #[arg(long)]
     pub sql_server: Option<Url>,

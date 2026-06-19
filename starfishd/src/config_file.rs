@@ -7,8 +7,6 @@ use url::Url;
 #[derive(Debug, Deserialize)]
 pub struct ConfigFile {
     pub nats_server: Option<Url>,
-    pub nats_user: Option<String>,
-    pub nats_password: Option<String>,
     pub sql_server: Option<Url>,
     pub log_level: Option<LevelFilter>,
 }
@@ -27,8 +25,6 @@ impl Default for ConfigFile {
         Self {
             log_level: None,
             nats_server: None,
-            nats_user: None,
-            nats_password: None,
             sql_server: None,
         }
     }
