@@ -6,12 +6,22 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct UserAdd {
-    pub email: String,
     pub alias: String,
+    pub email: String,
     #[serde(rename = "firstName")]
     pub first_name: String,
     #[serde(rename = "lastName")]
     pub last_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct UserUpdate {
+    pub alias: String,
+    pub email: Option<String>,
+    #[serde(rename = "firstName")]
+    pub first_name: Option<String>,
+    #[serde(rename = "lastName")]
+    pub last_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

@@ -2,13 +2,32 @@ use crate::server_config::ServerConfig;
 use anyhow::Context;
 use async_nats::{
     ConnectOptions, ServerAddr,
-    service::{Service, ServiceExt, error::Error as NatsError},
+    service::{Request, Service, ServiceExt, error::Error as NatsError},
 };
 use sf_admin_msg as msg;
 use tokio::signal;
-use tokio_postgres::{NoTls, error::SqlState};
+use tokio_postgres::{NoTls, Row};
 use tokio_stream::StreamExt;
 use tokio_util::{bytes::Bytes, sync::CancellationToken};
+
+/// Builds the `SET` clause of an `UPDATE` from `(column, value)` pairs,
+/// returning the `column = $n` fragment along with the matching bind parameters
+/// in order. Placeholders are numbered starting at `start_index` so the caller
+/// can append further parameters (e.g. a `WHERE` key).
+fn create_set_clause<'a>(
+    fields: &'a [(&str, &str)],
+    start_index: usize,
+) -> (String, Vec<&'a (dyn tokio_postgres::types::ToSql + Sync)>) {
+    let mut clauses = Vec::new();
+    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
+
+    for (index, (column, value)) in fields.iter().enumerate() {
+        params.push(value);
+        clauses.push(format!("{} = ${}", column, start_index + index));
+    }
+
+    (clauses.join(", "), params)
+}
 
 pub struct Server {
     config: ServerConfig,
@@ -78,54 +97,126 @@ impl Server {
             .endpoint("user.add")
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
+        let mut user_update = group
+            .endpoint("user.update")
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
         let mut user_remove = group
             .endpoint("user.remove")
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
+        async fn handle_query_one_result(
+            request: &Request,
+            result: Result<Row, tokio_postgres::Error>,
+        ) -> anyhow::Result<()> {
+            match result {
+                Ok(row) => {
+                    let id = row.get::<_, i64>(0);
+                    log::info!("Add/update/delete successful with ID: {}", id);
+                    let response = msg::UserAddResponse { id };
+                    let vec = rmp_serde::to_vec(&response);
+                    if let Ok(vec) = vec {
+                        request.respond(Ok(Bytes::from(vec))).await?;
+                    } else {
+                        request
+                            .respond(Err(NatsError {
+                                status: "Internal server error".into(),
+                                code: 500,
+                            }))
+                            .await?;
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to add/update/delete: {:?}", e);
+
+                    let svc_err = match e.as_db_error().map(|db| db.code()) {
+                        Some(c) => NatsError {
+                            status: format!("Database error {}", c.code()),
+                            code: 400,
+                        },
+                        _ => NatsError {
+                            status: "Internal database error".into(),
+                            code: 500,
+                        },
+                    };
+                    request.respond(Err(svc_err)).await?;
+                }
+            }
+
+            Ok(())
+        }
+
+        async fn handle_no_fields(
+            request: &Request,
+            fields: &[(&str, &str)],
+        ) -> anyhow::Result<()> {
+            if fields.is_empty() {
+                request
+                    .respond(Err(NatsError {
+                        status: "No fields to update".into(),
+                        code: 400,
+                    }))
+                    .await?;
+            }
+            Ok(())
+        }
+
         loop {
             tokio::select! {
                 Some(request) = user_add.next() => {
                     if let Result::Ok(message) = rmp_serde::from_slice::<msg::UserAdd>(&request.message.payload) {
-                        log::debug!("Add user request received: {:?}", message);
-
-                        let result = sql_client.query_one(
-                            r#"INSERT INTO users (email, alias, first_name, last_name)
+                        let result = sql_client
+                            .query_one(
+                                r#"INSERT INTO users (email, alias, first_name, last_name)
                                VALUES ($1, $2, $3, $4)
                                RETURNING id;"#,
-                            &[&message.email, &message.alias, &message.first_name, &message.last_name],
-                        ).await;
+                                &[
+                                    &message.email,
+                                    &message.alias,
+                                    &message.first_name,
+                                    &message.last_name,
+                                ],
+                            )
+                            .await;
 
-                        match result {
-                            Ok(row) => {
-                                let user_id = row.get::<_, i64>(0);
-                                log::info!("User '{}' added successfully with ID: {}", message.alias, user_id);
-                                let response = msg::UserAddResponse {
-                                    id: user_id,
-                                };
-                                let vec = rmp_serde::to_vec(&response);
-                                if let Ok(vec) = vec {
-                                    request.respond(Ok(Bytes::from(vec))).await?;
-                                } else {
-                                    request.respond(Err(NatsError { status: "Internal server error".into(), code: 500 })).await?;
-                                }
-                            }
-                            Err(e) => {
-                                log::error!("Failed to add user {:?}: {:?}", message, e);
-                                let svc_err = match e.as_db_error().map(|db| db.code()) {
-                                    Some(c) if *c == SqlState::UNIQUE_VIOLATION =>
-                                        NatsError { status: "User already exists".into(), code: 409 },
-                                    _ =>
-                                        NatsError { status: "Internal database error".into(), code: 500 },
-                                };
-                                request.respond(Err(svc_err)).await?;
-                            }
+                        handle_query_one_result(&request, result).await?;
+                    }
+                }
+                Some(request) = user_update.next() => {
+                    if let Result::Ok(message) = rmp_serde::from_slice::<msg::UserUpdate>(&request.message.payload) {
+                        // Collect the fields that were actually provided.
+                        let mut fields: Vec<(&str, &str)> = Vec::new();
+                        if let Some(email) = &message.email {
+                            fields.push(("email", email));
                         }
+                        if let Some(first_name) = &message.first_name {
+                            fields.push(("first_name", first_name));
+                        }
+                        if let Some(last_name) = &message.last_name {
+                            fields.push(("last_name", last_name));
+                        }
+                        handle_no_fields(&request, &fields).await?;
+
+                        // `alias` is the lookup key ($1), so the updatable fields start at $2.
+                        let (set_clause, mut params) = create_set_clause(&fields, 2);
+                        params.insert(0, &message.alias);
+                        let sql = format!("UPDATE users SET {} WHERE alias = $1 RETURNING id;", set_clause);
+                        let result = sql_client.query_one(&sql, &params).await;
+
+                        handle_query_one_result(&request, result).await?;
                     }
                 }
                 Some(request) = user_remove.next() => {
                     if let Result::Ok(message) = rmp_serde::from_slice::<msg::UserRemove>(&request.message.payload) {
-                        log::debug!("Delete user request received: {:?}", message);
+                        let result = sql_client
+                            .query_one(
+                                r#"DELETE FROM users WHERE alias = $1 RETURNING id;"#,
+                                &[&message.alias],
+                            )
+                            .await;
+
+                        handle_query_one_result(&request, result).await?;
                     }
                 }
                 _ = cancel_token.cancelled() => {
