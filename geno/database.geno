@@ -1,0 +1,81 @@
+// Starfish Database
+
+#![format = 1]
+
+include "./jiff.geno"
+
+// User
+#[table]
+struct User {
+  #[primaryKey, autoIncrement]
+  id: i64,
+  #[unique]
+  alias: string,
+  #[unique]
+  email: string,
+  firstName: string,
+  lastName: string,
+  modifiedAt: Timestamp,
+  createdAt: Timestamp,
+}
+
+// User SSH Key
+#[table]
+struct SshKey {
+  #[primaryKey, autoIncrement]
+  id: i64,
+  #[ref="User.id"]
+  userId: i64,
+  key: string,
+  name: string,
+  modifiedAt: Timestamp,
+  createdAt: Timestamp,
+}
+
+// Host
+#[table]
+struct Host {
+  #[primaryKey, autoIncrement]
+  id: i64,
+  #[ref="HostGroup.id"]
+  hostGroupId: i64,
+  name: string,
+  os: string,
+  createdAt: Timestamp,
+  modifiedAt: Timestamp,
+}
+
+// Host Group
+#[table]
+struct HostGroup {
+  #[primaryKey, autoIncrement]
+  id: i64,
+  name: string,
+  createdAt: Timestamp,
+  modifiedAt: Timestamp,
+}
+
+// Host Group Security Group
+#[table]
+struct HostGroupSecurityGroup {
+  #[primaryKey, autoIncrement]
+  id: i64,
+  #[ref="HostGroup.id"]
+  hostGroupId: i64,
+  secGroup: string,
+  createdAt: Timestamp,
+  modifiedAt: Timestamp,
+}
+
+// Host Group User
+#[table]
+struct HostGroupUser {
+  #[primaryKey, ref="HostGroup.id"]
+  hostGroupId: i64,
+  #[primaryKey, ref="User.id"]
+  userId: i64,
+  isAdmin: bool,
+  isSudoer: bool,
+  createdAt: Timestamp,
+  modifiedAt: Timestamp,
+}

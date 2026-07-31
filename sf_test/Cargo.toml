@@ -1,0 +1,12 @@
+[package]
+name = "sf_test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+crate = "0.1.1"
+jiff = "0.2.29"
+jiff-sqlx = { version = "0.2.0", features = ["postgres"] }
+sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "tls-rustls"] }
+tokio = { version = "1.52.3", features = ["full"] }

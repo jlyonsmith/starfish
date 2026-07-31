@@ -10,25 +10,6 @@ use tokio_postgres::{NoTls, Row};
 use tokio_stream::StreamExt;
 use tokio_util::{bytes::Bytes, sync::CancellationToken};
 
-/// Builds the `SET` clause of an `UPDATE` from `(column, value)` pairs,
-/// returning the `column = $n` fragment along with the matching bind parameters
-/// in order. Placeholders are numbered starting at `start_index` so the caller
-/// can append further parameters (e.g. a `WHERE` key).
-fn create_set_clause<'a>(
-    fields: &'a [(&str, &str)],
-    start_index: usize,
-) -> (String, Vec<&'a (dyn tokio_postgres::types::ToSql + Sync)>) {
-    let mut clauses = Vec::new();
-    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
-
-    for (index, (column, value)) in fields.iter().enumerate() {
-        params.push(value);
-        clauses.push(format!("{} = ${}", column, start_index + index));
-    }
-
-    (clauses.join(", "), params)
-}
-
 pub struct Server {
     config: ServerConfig,
 }
@@ -147,18 +128,14 @@ impl Server {
             Ok(())
         }
 
-        async fn handle_no_fields(
-            request: &Request,
-            fields: &[(&str, &str)],
-        ) -> anyhow::Result<()> {
-            if fields.is_empty() {
-                request
-                    .respond(Err(NatsError {
-                        status: "No fields to update".into(),
-                        code: 400,
-                    }))
-                    .await?;
-            }
+        async fn handle_sql_prepare_error(request: &Request, error: &str) -> anyhow::Result<()> {
+            request
+                .respond(Err(NatsError {
+                    status: error.into(),
+                    code: 450,
+                }))
+                .await?;
+
             Ok(())
         }
 
@@ -185,26 +162,16 @@ impl Server {
                 }
                 Some(request) = user_update.next() => {
                     if let Result::Ok(message) = rmp_serde::from_slice::<msg::UserUpdate>(&request.message.payload) {
-                        // Collect the fields that were actually provided.
-                        let mut fields: Vec<(&str, &str)> = Vec::new();
-                        if let Some(email) = &message.email {
-                            fields.push(("email", email));
+                        match message.create_update_sql() {
+                            Ok((sql, params)) => {
+                                let result = sql_client.query_one(&sql, &params).await;
+                                handle_query_one_result(&request, result).await?;
+                            }
+                            Err(e) => {
+                                handle_sql_prepare_error(&request, &e).await?;
+                            }
                         }
-                        if let Some(first_name) = &message.first_name {
-                            fields.push(("first_name", first_name));
-                        }
-                        if let Some(last_name) = &message.last_name {
-                            fields.push(("last_name", last_name));
-                        }
-                        handle_no_fields(&request, &fields).await?;
 
-                        // `alias` is the lookup key ($1), so the updatable fields start at $2.
-                        let (set_clause, mut params) = create_set_clause(&fields, 2);
-                        params.insert(0, &message.alias);
-                        let sql = format!("UPDATE users SET {} WHERE alias = $1 RETURNING id;", set_clause);
-                        let result = sql_client.query_one(&sql, &params).await;
-
-                        handle_query_one_result(&request, result).await?;
                     }
                 }
                 Some(request) = user_remove.next() => {

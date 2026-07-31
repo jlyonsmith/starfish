@@ -1,78 +1,82 @@
--- Automatically update 'modified' on UPDATE
-CREATE OR REPLACE FUNCTION set_modified()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
+CREATE TABLE IF NOT EXISTS "user" (
+  "id" BIGSERIAL,
+  "alias" TEXT NOT NULL UNIQUE,
+  "email" TEXT NOT NULL UNIQUE,
+  "first_name" TEXT NOT NULL,
+  "last_name" TEXT NOT NULL,
+  "modified_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY ("id")
+);
+
+CREATE TABLE IF NOT EXISTS "ssh_key" (
+  "id" BIGSERIAL,
+  "user_id" BIGINT NOT NULL REFERENCES "user"("id") ON DELETE CASCADE,
+  "key" TEXT NOT NULL,
+  "name" TEXT NOT NULL,
+  "modified_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY ("id")
+);
+
+CREATE TABLE IF NOT EXISTS "host_group" (
+  "id" BIGSERIAL,
+  "name" TEXT NOT NULL,
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "modified_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY ("id")
+);
+
+CREATE TABLE IF NOT EXISTS "host" (
+  "id" BIGSERIAL,
+  "host_group_id" BIGINT NOT NULL REFERENCES "host_group"("id") ON DELETE CASCADE,
+  "name" TEXT NOT NULL,
+  "os" TEXT NOT NULL,
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "modified_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY ("id")
+);
+
+CREATE TABLE IF NOT EXISTS "host_group_security_group" (
+  "id" BIGSERIAL,
+  "host_group_id" BIGINT NOT NULL REFERENCES "host_group"("id") ON DELETE CASCADE,
+  "sec_group" TEXT NOT NULL,
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "modified_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY ("id")
+);
+
+CREATE TABLE IF NOT EXISTS "host_group_user" (
+  "host_group_id" BIGINT NOT NULL REFERENCES "host_group"("id") ON DELETE CASCADE,
+  "user_id" BIGINT NOT NULL REFERENCES "user"("id") ON DELETE CASCADE,
+  "is_admin" BOOLEAN NOT NULL,
+  "is_sudoer" BOOLEAN NOT NULL,
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "modified_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY ("host_group_id", "user_id")
+);
+
+CREATE OR REPLACE FUNCTION set_modified_at() RETURNS TRIGGER AS $$
 BEGIN
-  NEW.modified = NOW();
+  NEW."modified_at" = NOW();
   RETURN NEW;
 END;
-$$;
+$$ LANGUAGE plpgsql;
 
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'sf_server') THEN
-    CREATE USER sf_server WITH PASSWORD 'snoopy';
-  END IF;
-END$$;
+CREATE OR REPLACE TRIGGER set_modified_at_user BEFORE UPDATE ON "user"
+  FOR EACH ROW EXECUTE FUNCTION set_modified_at();
 
-CREATE TABLE IF NOT EXISTS users (
-  id          BIGSERIAL    PRIMARY KEY,
-  email       TEXT         NOT NULL UNIQUE,
-  first_name  TEXT         NOT NULL,
-  last_name   TEXT         NOT NULL,
-  alias       TEXT         NOT NULL UNIQUE,
-  created     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-  modified    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-);
+CREATE OR REPLACE TRIGGER set_modified_at_ssh_key BEFORE UPDATE ON "ssh_key"
+  FOR EACH ROW EXECUTE FUNCTION set_modified_at();
 
-CREATE OR REPLACE TRIGGER users_set_modified
-  BEFORE UPDATE ON users
-  FOR EACH ROW EXECUTE FUNCTION set_modified();
+CREATE OR REPLACE TRIGGER set_modified_at_host_group BEFORE UPDATE ON "host_group"
+  FOR EACH ROW EXECUTE FUNCTION set_modified_at();
 
-CREATE TABLE IF NOT EXISTS user_ssh_keys (
-  user_id  BIGINT       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  key      TEXT         NOT NULL,
-  name     TEXT         NOT NULL,
-  created  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (user_id, key)
-);
+CREATE OR REPLACE TRIGGER set_modified_at_host BEFORE UPDATE ON "host"
+  FOR EACH ROW EXECUTE FUNCTION set_modified_at();
 
-CREATE TABLE IF NOT EXISTS host_groups (
-  id        BIGSERIAL    PRIMARY KEY,
-  name      TEXT         NOT NULL UNIQUE,
-  created   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-  modified  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-);
+CREATE OR REPLACE TRIGGER set_modified_at_host_group_security_group BEFORE UPDATE ON "host_group_security_group"
+  FOR EACH ROW EXECUTE FUNCTION set_modified_at();
 
-CREATE OR REPLACE TRIGGER host_groups_set_modified
-  BEFORE UPDATE ON host_groups
-  FOR EACH ROW EXECUTE FUNCTION set_modified();
-
-CREATE TABLE IF NOT EXISTS host_group_users (
-  host_group_id  BIGINT   NOT NULL REFERENCES host_groups(id) ON DELETE CASCADE,
-  user_id        BIGINT   NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  is_group_admin BOOLEAN  NOT NULL DEFAULT FALSE,
-  PRIMARY KEY (host_group_id, user_id)
-);
-
-CREATE TABLE IF NOT EXISTS hosts (
-  id              BIGSERIAL    PRIMARY KEY,
-  host_group_id   BIGINT       NOT NULL REFERENCES host_groups(id) ON DELETE CASCADE,
-  host_name       TEXT         NOT NULL,
-  os_description  TEXT,
-  created         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-  modified        TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-);
-
-CREATE OR REPLACE TRIGGER hosts_set_modified
-  BEFORE UPDATE ON hosts
-  FOR EACH ROW EXECUTE FUNCTION set_modified();
-
-CREATE TABLE IF NOT EXISTS host_users (
-  host_id     BIGINT       NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
-  user_id     BIGINT       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  uid         INTEGER      NOT NULL,
-  gid         INTEGER      NOT NULL,
-  created     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-  is_sudoer   BOOLEAN      NOT NULL DEFAULT FALSE,
-  PRIMARY KEY (host_id, user_id)
-);
+CREATE OR REPLACE TRIGGER set_modified_at_host_group_user BEFORE UPDATE ON "host_group_user"
+  FOR EACH ROW EXECUTE FUNCTION set_modified_at();

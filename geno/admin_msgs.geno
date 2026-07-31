@@ -1,0 +1,38 @@
+// Starfish admin messages
+
+#![format = 1]
+
+!include "./database.geno"
+
+// Create user
+struct UserCreate {
+  alias: string,
+  email: string,
+  firstName: string,
+  lastName: string,
+}
+
+// Update user
+struct UserUpdate {
+  alias: string,
+  email: string?,
+  firstName: string?,
+  lastName: string?,
+}
+
+// Delete user
+struct UserDelete {
+  alias: string,
+}
+
+struct UserResponse {
+  user: User,
+}
+
+struct UserList {
+}
+
+// User List
+struct UserListResponse {
+  rows: User[],
+}
