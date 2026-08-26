@@ -1,62 +1,10 @@
-use anyhow::{Context, bail};
-use async_nats::{ConnectOptions, ServerAddr};
-use clap::{Parser, Subcommand};
-use sf_admin_msg as msg;
-use tokio_util::bytes::Bytes;
-use url::Url;
+use anyhow::Context;
+use clap::Parser;
+use starfish_db::User;
 
-#[derive(Parser)]
-#[command(version, about = "Starfish administration tool")]
-struct AdminArgs {
-    #[command(subcommand)]
-    entity: Entity,
+mod admin_args;
 
-    /// Address of the NATS server.  Can include a user name and password.  Defaults to `nats://localhost:4222`.
-    #[arg(long, default_value = "nats://localhost:4222")]
-    pub nats_server: Url,
-}
-
-#[derive(Subcommand)]
-enum Entity {
-    User {
-        #[command(subcommand)]
-        op: UserOp,
-    },
-    Host,
-    HostGroup,
-}
-
-#[derive(Subcommand)]
-enum UserOp {
-    /// Add a new user
-    Add {
-        #[arg(long)]
-        alias: String,
-        #[arg(long)]
-        first_name: String,
-        #[arg(long)]
-        last_name: String,
-        #[arg(long)]
-        email: String,
-    },
-    /// Remove an existing user
-    Remove {
-        #[arg(short, long)]
-        alias: String,
-    },
-    /// List all users
-    List {
-        #[arg(short, long)]
-        verbose: bool,
-    },
-    /// Update a user's information
-    Update {
-        #[arg(short, long)]
-        name: String,
-        #[arg(short, long)]
-        sudoer: Option<bool>,
-    },
-}
+use admin_args::*;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -69,63 +17,89 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Extract any credentials from the URL and connect with a credential-free URL.
-    let mut nats_server = args.nats_server.clone();
-    let username = nats_server.username().to_string();
-    let password = nats_server.password().map(str::to_string);
-    nats_server.set_username("").ok();
-    nats_server.set_password(None).ok();
-
-    let server_addr = ServerAddr::from_url(nats_server.clone())?;
-    let mut nats_options = ConnectOptions::new().name(env!("CARGO_PKG_NAME"));
-
-    if !username.is_empty() {
-        nats_options = nats_options.user_and_password(username, password.unwrap_or_default());
-    }
-
-    let nats_client = nats_options
-        .connect(server_addr)
+    let mut db = toasty::Db::builder()
+        .models(toasty::models!(starfish_db::*))
+        .connect(&args.postgres_server.to_string())
         .await
-        .context(format!("Unable to connect to NATS server {}", nats_server))?;
+        .context("Unable to connect to database")?;
 
     match &args.entity {
+        Entity::System { op } => match op {
+            SystemOp::CreateDatabase => {
+                db.push_schema().await?;
+                println!("Database created successfully");
+            }
+        },
         Entity::User { op } => match op {
             UserOp::Add {
                 alias,
                 first_name,
                 last_name,
                 email,
+                ssh_keys,
             } => {
-                let payload = msg::UserAdd {
+                let mut user_builder = toasty::create!(starfish_db::User {
                     alias: alias.clone(),
                     first_name: first_name.clone(),
                     last_name: last_name.clone(),
                     email: email.clone(),
-                };
-                use async_nats::service::{NATS_SERVICE_ERROR, NATS_SERVICE_ERROR_CODE};
+                });
 
-                let reply = nats_client
-                    .request("v1.user.add", Bytes::from(rmp_serde::to_vec(&payload)?))
+                if let Some(ssh_keys) = ssh_keys {
+                    user_builder = user_builder.ssh_keys(
+                        ssh_keys
+                            .iter()
+                            .map(|tuple| {
+                                starfish_db::SshKey::create()
+                                    .name(tuple.0.clone())
+                                    .key(tuple.1.clone())
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+
+                let user = user_builder.exec(&mut db).await?;
+
+                println!("User '{}' (id: {}) added successfully", user.alias, user.id);
+            }
+            UserOp::Remove { alias } => {
+                User::delete_by_alias(&mut db, alias)
+                    .await
+                    .context(format!("Could not find user {}", alias))?;
+
+                println!("User '{}' removed successfully", alias);
+            }
+            UserOp::List { verbose } => {
+                let users = User::all()
+                    .order_by(User::fields().alias().asc())
+                    .exec(&mut db)
                     .await?;
 
-                if let Some(headers) = &reply.headers {
-                    if let Some(err) = headers.get(NATS_SERVICE_ERROR) {
-                        let code = headers
-                            .get(NATS_SERVICE_ERROR_CODE)
-                            .map(|c| c.as_str())
-                            .unwrap_or("?");
-                        bail!("Failed to add user '{}': {} ({})", alias, err, code);
+                for user in users {
+                    if *verbose {
+                        println!(
+                            "alias: {}, id: {}, first_name: {}, last_name: {}, email: {}",
+                            user.alias, user.id, user.first_name, user.last_name, user.email
+                        );
+                    } else {
+                        println!("{}", user.alias);
                     }
                 }
-                let response: msg::UserAddResponse = rmp_serde::from_slice(&reply.payload)?;
-                println!("User '{}' added successfully (id {})", alias, response.id);
             }
-            UserOp::Remove { .. } => {}
-            UserOp::List { .. } => {}
             UserOp::Update { .. } => {}
         },
-        Entity::Host => {}
-        Entity::HostGroup => {}
+        Entity::Host { op } => match op {
+            HostOp::Add { .. } => {}
+            HostOp::Remove { .. } => {}
+            HostOp::Update { .. } => {}
+            HostOp::List { .. } => {}
+        },
+        Entity::HostGroup { op } => match op {
+            HostGroupOp::Add { .. } => {}
+            HostGroupOp::Remove { .. } => {}
+            HostGroupOp::Update { .. } => {}
+            HostGroupOp::List { .. } => {}
+        },
     }
 
     Ok(())

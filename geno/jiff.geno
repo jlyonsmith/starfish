@@ -1,9 +1,0 @@
-// Jiff support
-
-#![format=1]
-
-// Jiff support
-struct Timestamp {
-  secs: i64,
-  nanos: i32,
-}

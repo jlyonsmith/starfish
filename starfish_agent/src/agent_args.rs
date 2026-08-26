@@ -3,19 +3,18 @@ use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use std::path::PathBuf;
-use url::Url;
 
-#[derive(Parser, Deserialize, Serialize)]
+#[derive(Parser, Serialize, Deserialize)]
+#[command(version, about = "Starfish agent")]
 #[skip_serializing_none]
-#[clap(version, about, long_about = None)]
-pub struct ServerArgs {
+pub struct AgentArgs {
     /// Config file path
-    #[arg(long = "config", short = 'c', default_value = "/etc/starfishd.conf")]
+    #[arg(
+        long = "config",
+        short = 'c',
+        default_value = "/etc/starfish_agent.conf"
+    )]
     pub config_path: PathBuf,
-
-    /// Address of the PostgreSQL server
-    #[arg(long)]
-    pub sql_server: Option<Url>,
 
     /// Set the logging level (e.g., info, debug, trace)
     #[arg(long)]

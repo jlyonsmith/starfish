@@ -1,0 +1,8 @@
+[package]
+name = "starfish_db"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+jiff = "0.2.35"
+toasty = { version = "0.9.0", features = ["postgresql", "jiff"] }

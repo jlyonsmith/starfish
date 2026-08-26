@@ -9,12 +9,16 @@ async-nats = "0.49.1"
 bytes = "1.11.1"
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11.10"
+figment = { version = "0.10.19", features = ["toml"] }
 futures-util = "0.3.32"
 log = { version = "0.4.32", features = ["serde"] }
+serde = "1.0.229"
 serde_json = "1.0.150"
+serde_with = "3.22.0"
+single-instance = "0.3.3"
 tokio = { version = "1.52.3", features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["full"] }
 
 [[bin]]
 name = "starfish-agent"
-path = "src/bin/starfish_agent.rs"
+path = "src/main.rs"

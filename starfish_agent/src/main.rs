@@ -1,14 +1,3 @@
-//#![warn(unused_crate_dependencies)]
-
-mod server;
-mod server_args;
-mod server_config;
-
-use server_args::ServerArgs;
-
-pub use server::Server;
-pub use server_config::ServerConfig;
-
 use anyhow::Context;
 use clap::Parser;
 use figment::{
@@ -17,9 +6,17 @@ use figment::{
 };
 use single_instance::SingleInstance;
 
+mod agent;
+mod agent_args;
+mod agent_config;
+
+use agent::Agent;
+use agent_args::*;
+pub use agent_config::*;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = match ServerArgs::try_parse() {
+    let args = match AgentArgs::try_parse() {
         Ok(m) => m,
         Err(err) => {
             // Help and version come back as an error
@@ -37,13 +34,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let config = Figment::new()
-        .merge(Serialized::defaults(ServerConfig::default()))
+        .merge(Serialized::defaults(AgentConfig::default()))
         .merge(Serialized::defaults(&args))
         .merge(Toml::file(&args.config_path))
         .extract()?;
 
     // Handle async construction of the server
-    Server::new(&config).run().await?;
+    Agent::new(&config).run().await?;
 
     Ok(())
 }

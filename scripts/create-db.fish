@@ -14,8 +14,8 @@ echo "Creating database '$DB_NAME' on $DB_HOST:$DB_PORT..."
 eval $PSQL -d postgres -c '"CREATE DATABASE '$DB_NAME';"'; \
   or echo "Database '$DB_NAME' already exists, skipping."
 
-echo "Applying schema..."
+# echo "Applying schema..."
 
-eval $PSQL -d "$DB_NAME" -f "$SCRIPT_DIR/starfish-schema.sql"
+# eval $PSQL -d "$DB_NAME" -f "$SCRIPT_DIR/starfish-schema.sql"
 
 echo "Done."
