@@ -26,7 +26,17 @@ jiff = "0.2.35"
 starfish_db = { path = "../starfish_db" }
 figment = { version = "0.10.19", features = ["toml"] }
 serde_with = "3.22.0"
+starfish_msg = { version = "0.1.0", path = "../starfish_msg" }
+tokio-websockets = { version = "0.13.3", features = ["server", "client", "fastrand", "sha1_smol"] }
+futures-util = "0.3.34"
+thiserror = "2.0.20"
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["logging", "tls12", "ring"] }
+rustls-pemfile = "2.2.0"
+libc = "0.2.189"
 
 [[bin]]
 name = "starfishd"
 path = "src/main.rs"
+
+[dev-dependencies]
+anyhow = "1.0.102"

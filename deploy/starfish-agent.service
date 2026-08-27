@@ -1,0 +1,56 @@
+# Install as /etc/systemd/system/starfish-agent.service.
+#
+# Create the service account first.  It owns nothing and logs in nowhere; its
+# only privilege is the single sudo rule in starfish-sync.sudoers.
+#
+#   adduser --system --group --no-create-home --shell /usr/sbin/nologin starfish
+#
+[Unit]
+Description=Starfish user synchronization agent
+After=network-online.target
+Wants=network-online.target
+
+# The agent reconnects on its own, so a controller it cannot reach is not a
+# reason to give up and stay down.  This belongs in [Unit]; systemd ignores it
+# with a warning if it is put under [Service].
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=starfish
+Group=starfish
+ExecStart=/usr/local/bin/starfish-agent --config /etc/starfish_agent.conf
+Restart=always
+RestartSec=5
+
+# The agent handles TLS and decodes messages from the network, so it is the part
+# worth confining.
+#
+# There is a hard limit on how far that can go.  The helper is started by sudo
+# as a child of this unit, so it inherits this mount namespace: anything that
+# makes /etc read-only stops useradd from locking /etc/passwd, and hiding /home
+# stops authorized_keys being written.  `ProtectSystem=strict` and
+# `ProtectHome=yes` both break account management outright.  `yes` keeps /usr
+# and /boot read-only, which is as much as this shape of deployment allows.
+#
+# Confining the agent properly would mean not starting the helper from inside
+# this unit at all: run it as its own root service behind a socket, and let this
+# one talk to it.  See the Privileges section of the README.
+ProtectSystem=yes
+ProtectHome=no
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# NoNewPrivileges is deliberately absent: setting it would stop sudo from
+# raising privileges, and the agent would be unable to apply anything.
+
+[Install]
+WantedBy=multi-user.target

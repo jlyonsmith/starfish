@@ -1,8 +1,13 @@
 //#![warn(unused_crate_dependencies)]
 
+mod admin_socket;
+mod agent_registry;
+mod agent_session;
+mod controller;
 mod server;
 mod server_args;
 mod server_config;
+mod tls;
 
 use server_args::ServerArgs;
 
@@ -23,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
         Ok(m) => m,
         Err(err) => {
             // Help and version come back as an error
-            eprintln!("{}", err.to_string());
+            eprintln!("{err}");
             return Ok(());
         }
     };
@@ -37,10 +42,15 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let config = Figment::new()
-        .merge(Serialized::defaults(ServerConfig::default()))
-        .merge(Serialized::defaults(&args))
         .merge(Toml::file(&args.config_path))
-        .extract()?;
+        .merge(Serialized::defaults(&args))
+        .extract()
+        .with_context(|| {
+            format!(
+                "Unable to read the configuration from {} and the command line",
+                args.config_path.display()
+            )
+        })?;
 
     // Handle async construction of the server
     Server::new(&config).run().await?;

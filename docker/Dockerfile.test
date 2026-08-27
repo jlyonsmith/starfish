@@ -1,0 +1,46 @@
+# An Ubuntu host for the tests in starfish_sync/tests/ubuntu.rs.
+#
+# The point is to run the privileged half against a real Ubuntu, where
+# useradd, gpasswd and getent actually exist and accounts can be created and
+# thrown away.  The sudoers rule from deploy/ is installed as it would be in
+# production, so the tests check the deployment file itself and not a copy of
+# it that has drifted.
+#
+#   docker build -f docker/Dockerfile.test -t starfish-test:latest .
+
+FROM rust:1-bookworm AS build
+
+WORKDIR /src
+COPY . .
+
+# The cache mounts do not survive into the image, so the binaries are copied
+# somewhere that does.  Bookworm's glibc is older than Ubuntu 24.04's, and
+# glibc is forward compatible, so binaries built here run there.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release -p starfish_sync -p starfish_agent \
+    && mkdir -p /out \
+    && cp target/release/starfish-sync target/release/starfish-agent /out/
+
+FROM ubuntu:24.04
+
+# passwd supplies useradd and friends; it is already in the base image, but
+# being explicit means a slimmer base later does not quietly break the tests.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends sudo passwd \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /out/starfish-sync /usr/local/lib/starfish/starfish-sync
+COPY --from=build /out/starfish-agent /usr/local/bin/starfish-agent
+
+# Exactly the deployment described in the README: an unprivileged service
+# account whose only privilege is one sudo rule naming one argument-less
+# command.
+COPY deploy/starfish-sync.sudoers /etc/sudoers.d/starfish
+
+RUN useradd --system --no-create-home --shell /usr/sbin/nologin starfish \
+    && chown root:root /etc/sudoers.d/starfish \
+    && chmod 0440 /etc/sudoers.d/starfish \
+    && visudo -c -f /etc/sudoers.d/starfish
+
+CMD ["sleep", "infinity"]

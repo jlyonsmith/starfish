@@ -1,0 +1,5 @@
+# The macOS build output is large and useless to a Linux build.
+target/
+.git/
+.claude/
+scratch/

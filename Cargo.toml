@@ -1,3 +1,10 @@
 [workspace]
-members = ["starfish_db", "starfishd", "starfish_admin", "starfish_agent"]
+members = [
+    "starfish_db",
+    "starfish_msg",
+    "starfishd",
+    "starfish_admin",
+    "starfish_agent",
+    "starfish_sync",
+]
 resolver = "3"

@@ -1,8 +1,8 @@
 use anyhow::Context;
 use clap::Parser;
-use starfish_db::User;
 
 mod admin_args;
+mod commands;
 
 use admin_args::*;
 
@@ -12,94 +12,48 @@ async fn main() -> anyhow::Result<()> {
         Ok(m) => m,
         Err(err) => {
             // Help and version come back as an error
-            eprintln!("{}", err.to_string());
+            eprintln!("{err}");
             return Ok(());
         }
     };
 
+    // Refreshing only talks to the controller, so it does not need, and should
+    // not insist on, a working database connection.
+    if let Command::Refresh { hostname } = &args.command {
+        return commands::refresh::run(&args.socket, hostname.as_deref()).await;
+    }
+
+    let database_url =
+        starfish_db::connection_url(&args.postgres_server, args.password_file.as_deref())?;
+
+    if let Some(warning) = starfish_db::tls_warning(&database_url) {
+        eprintln!("warning: {warning}");
+    }
+
     let mut db = toasty::Db::builder()
         .models(toasty::models!(starfish_db::*))
-        .connect(&args.postgres_server.to_string())
+        .connect(database_url.as_ref())
         .await
-        .context("Unable to connect to database")?;
+        .with_context(|| {
+            format!(
+                "Unable to connect to {}",
+                starfish_db::redact(&database_url)
+            )
+        })?;
 
-    match &args.entity {
-        Entity::System { op } => match op {
-            SystemOp::CreateDatabase => {
-                db.push_schema().await?;
-                println!("Database created successfully");
-            }
-        },
-        Entity::User { op } => match op {
-            UserOp::Add {
-                alias,
-                first_name,
-                last_name,
-                email,
-                ssh_keys,
-            } => {
-                let mut user_builder = toasty::create!(starfish_db::User {
-                    alias: alias.clone(),
-                    first_name: first_name.clone(),
-                    last_name: last_name.clone(),
-                    email: email.clone(),
-                });
+    match &args.command {
+        Command::InitDb => {
+            db.push_schema()
+                .await
+                .context("Unable to create the database schema")?;
 
-                if let Some(ssh_keys) = ssh_keys {
-                    user_builder = user_builder.ssh_keys(
-                        ssh_keys
-                            .iter()
-                            .map(|tuple| {
-                                starfish_db::SshKey::create()
-                                    .name(tuple.0.clone())
-                                    .key(tuple.1.clone())
-                            })
-                            .collect::<Vec<_>>(),
-                    );
-                }
-
-                let user = user_builder.exec(&mut db).await?;
-
-                println!("User '{}' (id: {}) added successfully", user.alias, user.id);
-            }
-            UserOp::Remove { alias } => {
-                User::delete_by_alias(&mut db, alias)
-                    .await
-                    .context(format!("Could not find user {}", alias))?;
-
-                println!("User '{}' removed successfully", alias);
-            }
-            UserOp::List { verbose } => {
-                let users = User::all()
-                    .order_by(User::fields().alias().asc())
-                    .exec(&mut db)
-                    .await?;
-
-                for user in users {
-                    if *verbose {
-                        println!(
-                            "alias: {}, id: {}, first_name: {}, last_name: {}, email: {}",
-                            user.alias, user.id, user.first_name, user.last_name, user.email
-                        );
-                    } else {
-                        println!("{}", user.alias);
-                    }
-                }
-            }
-            UserOp::Update { .. } => {}
-        },
-        Entity::Host { op } => match op {
-            HostOp::Add { .. } => {}
-            HostOp::Remove { .. } => {}
-            HostOp::Update { .. } => {}
-            HostOp::List { .. } => {}
-        },
-        Entity::HostGroup { op } => match op {
-            HostGroupOp::Add { .. } => {}
-            HostGroupOp::Remove { .. } => {}
-            HostGroupOp::Update { .. } => {}
-            HostGroupOp::List { .. } => {}
-        },
+            println!("Database schema created");
+        }
+        Command::User { op } => commands::user::run(&mut db, op).await?,
+        Command::HostGroup { op } => commands::host_group::run(&mut db, op).await?,
+        Command::SecurityGroup { op } => commands::security_group::run(&mut db, op).await?,
+        Command::Host { op } => commands::host::run(&mut db, op).await?,
+        Command::Refresh { .. } => unreachable!("handled before connecting to the database"),
     }
 
     Ok(())

@@ -1,0 +1,27 @@
+# A real Ubuntu VM for `just test-systemd`.
+#
+# The container tests cover everything the helper does to a host, but a
+# container has no systemd, so deploy/starfish-agent.service and its sandboxing
+# directives go untested there.  This VM is where that unit actually runs.
+#
+# Small on purpose: it only ever runs one agent and a handful of assertions.
+
+vmType: "vz"
+
+images:
+- location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+  arch: "aarch64"
+- location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+  arch: "x86_64"
+
+cpus: 2
+memory: "2GiB"
+disk: "10GiB"
+
+# Files go in with `limactl copy`, so the host filesystem is not shared. That
+# keeps the VM closer to a real host, where the repository is not present.
+mounts: []
+
+containerd:
+  system: false
+  user: false

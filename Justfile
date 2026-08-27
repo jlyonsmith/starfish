@@ -11,12 +11,28 @@ gen-all:
     just gen-msg
     just odin_ui/gen-all
 
-# Test by sta
+# Run the tests that need nothing external
 test:
-    #!/usr/bin/env fish
-    nats-server -DV &
-    # Start a test program here
-    kill $last_pid
+    cargo test --workspace
+
+# Run every test, including the ones needing PostgreSQL and Docker
+test-all: test-db test-ubuntu test-systemd
+
+# Run the controller end-to-end tests.  Drops and recreates the named database.
+test-db DATABASE_URL='postgresql://localhost:5432/starfish_test':
+    STARFISH_TEST_DATABASE_URL={{DATABASE_URL}} cargo test -p starfishd --test end_to_end
+
+# Build the Ubuntu image the container tests run against
+docker-image:
+    docker build -f docker/Dockerfile.test -t starfish-test:latest .
+
+# Run the privileged helper against a real Ubuntu in a container
+test-ubuntu: docker-image
+    STARFISH_TEST_DOCKER=1 cargo test -p starfish_sync --test ubuntu
+
+# Run the agent under systemd on a real Ubuntu VM
+test-systemd: docker-image
+    ./scripts/test-systemd.sh
 
 # Generate Geno message sources
 gen-msg:

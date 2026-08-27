@@ -1,0 +1,14 @@
+# Install as /etc/sudoers.d/starfish, owned by root, mode 0440:
+#
+#   install -o root -g root -m 0440 starfish-sync.sudoers /etc/sudoers.d/starfish
+#   visudo -c -f /etc/sudoers.d/starfish
+#
+# The helper takes no arguments, so this rule has no wildcards and nothing to
+# get wrong. Do not be tempted to allowlist useradd, usermod, gpasswd, chown or
+# chmod directly instead: any of those with arguments the agent chooses is
+# equivalent to giving it root outright.
+#
+# For this to mean anything, /usr/local/lib/starfish/starfish-sync and every
+# directory above it must be owned by root and not writable by the starfish
+# user, or the agent can simply replace the binary root is about to run.
+starfish ALL=(root) NOPASSWD: /usr/local/lib/starfish/starfish-sync

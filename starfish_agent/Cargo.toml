@@ -2,22 +2,24 @@
 name = "starfish_agent"
 version = "0.1.0"
 edition = "2024"
+description = "Starfish user management agent"
 
 [dependencies]
 anyhow = "1.0.102"
-async-nats = "0.49.1"
-bytes = "1.11.1"
 clap = { version = "4", features = ["derive"] }
+duct = "1.1.1"
 env_logger = "0.11.10"
 figment = { version = "0.10.19", features = ["toml"] }
-futures-util = "0.3.32"
+futures-util = { version = "0.3.32", features = ["sink"] }
 log = { version = "0.4.32", features = ["serde"] }
+rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = "1.0.229"
-serde_json = "1.0.150"
 serde_with = "3.22.0"
 single-instance = "0.3.3"
+starfish_msg = { version = "0.1.0", path = "../starfish_msg" }
 tokio = { version = "1.52.3", features = ["full"] }
-tokio-stream = { version = "0.1.18", features = ["full"] }
+tokio-websockets = { version = "0.13.3", features = ["client", "fastrand", "ring", "rustls-native-roots", "rustls-tls12", "sha1_smol"] }
+url = { version = "2.5.8", features = ["serde"] }
 
 [[bin]]
 name = "starfish-agent"
