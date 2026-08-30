@@ -6,11 +6,6 @@ list:
 create-db:
   ./scripts/create-db.fish
 
-# Run all generation recipes
-gen-all:
-    just gen-msg
-    just odin_ui/gen-all
-
 # Run the tests that need nothing external
 test:
     cargo test --workspace
@@ -33,10 +28,6 @@ test-ubuntu: docker-image
 # Run the agent under systemd on a real Ubuntu VM
 test-systemd: docker-image
     ./scripts/test-systemd.sh
-
-# Generate Geno message sources
-gen-msg:
-    geno --output-path sf_admin_msg/src/msgs.rs --format rust-serde msgs/admin.geno
 
 # Release a new version
 release OPERATION='incrPatch':
@@ -93,11 +84,7 @@ release OPERATION='incrPatch':
     warning "Tag '"$tagName"' already exists and will not be moved"
   end
 
-  if test -e 'justfile' -o -e 'Justfile'
-    just cov-json
-  else
-    cargo test
-  end
+  just test-all
 
   if test $status -ne 0
     # Rollback
