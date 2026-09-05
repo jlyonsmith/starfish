@@ -1,0 +1,39 @@
+# The cross compilation toolchain for the two Linux targets.
+#
+# aarch64-apple-darwin is not built here — that needs the macOS SDK and is a
+# native build on the host anyway.  This image only exists so that
+# aarch64-unknown-linux-gnu and x86_64-unknown-linux-gnu can be produced from
+# a Mac, inside the Colima VM.
+#
+#   docker build -f docker/Dockerfile.build -t starfish-build:latest .
+#
+# Bookworm's glibc is older than Ubuntu 24.04's, and glibc is forward
+# compatible, so what is built here runs on the deployment hosts.
+
+FROM rust:1-bookworm
+
+# One of the two Linux targets is native to the VM and needs nothing; Debian's
+# own gcc already installs itself under the triplet-prefixed name.  Only the
+# other one needs a cross compiler, and which one that is depends on whether
+# Colima is running on Apple silicon or Intel.  Nothing but `ring` compiles C,
+# so a gcc plus the target's libc headers is the whole toolchain — and the
+# headers have to be named explicitly, because the compiler only *recommends*
+# them and without them gcc silently reaches for the host's /usr/include.
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+      arm64) cross="gcc-x86-64-linux-gnu libc6-dev-amd64-cross" ;; \
+      amd64) cross="gcc-aarch64-linux-gnu libc6-dev-arm64-cross" ;; \
+      *) echo "unsupported build architecture" >&2; exit 1 ;; \
+    esac; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends $cross; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN rustup target add aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu
+
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+    CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc
+
+WORKDIR /src

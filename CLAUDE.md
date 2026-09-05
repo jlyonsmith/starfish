@@ -16,6 +16,10 @@ cargo build                     # build; binaries are starfishd, starfish-admin,
                                 # starfish-agent, starfish-sync
 cargo clippy
 cargo fmt
+just build-macos                # release build, aarch64-apple-darwin, natively
+just build-linux-arm64          # release build, aarch64-unknown-linux-gnu, in Docker
+just build-linux-amd64          # release build, x86_64-unknown-linux-gnu, in Docker
+just build-all                  # all three
 just test                       # cargo test --workspace; needs nothing external
 cargo test -p <crate> <name>    # a single test by substring match
 just test-db                    # controller against PostgreSQL (see below)
@@ -27,6 +31,16 @@ just test-all
 The three integration suites skip silently unless their environment variable is set
 (`STARFISH_TEST_DATABASE_URL`, `STARFISH_TEST_DOCKER`), which is what the `just` recipes
 supply. `just test-db` **drops and recreates** the database it is pointed at.
+
+The `build-` recipes produce release binaries for all three deployment targets under
+`target/<triple>/release`. `build-macos` is a plain native build, because cross compiling
+to Darwin would need the macOS SDK. The two Linux targets build inside
+`docker/Dockerfile.build` on a local Colima VM, which bind mounts the working tree and
+keeps the crates.io registry in a named volume. That image picks its cross compiler from
+the VM's own architecture, so one Linux target is always native to it; the other needs
+both a `gcc-*-linux-gnu` **and** its `libc6-dev-*-cross`, which is only *recommended* by
+the compiler and without which `ring` — the one crate here that compiles C — builds
+against the wrong `/usr/include`.
 
 Two Justfile recipes are stale and will fail: `gen-msg` / `gen-all` reference an
 `msgs/` directory and an `odin_ui/` subproject that do not exist, and `release` calls a

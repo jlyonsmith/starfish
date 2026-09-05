@@ -2,6 +2,38 @@
 list:
   just --list
 
+# Build the cross compilation image the two Linux builds run in
+build-image:
+    docker build -f docker/Dockerfile.build -t starfish-build:latest .
+
+# Cross compiling to Darwin would need the macOS SDK inside the container, and
+# the host is already the target, so this one is a plain native build.
+#
+# Build every binary for macOS on Apple silicon (aarch64-apple-darwin)
+build-macos:
+    cargo build --release --target aarch64-apple-darwin
+
+# Build every binary for 64-bit ARM Linux (aarch64-unknown-linux-gnu)
+build-linux-arm64: (cross-build 'aarch64-unknown-linux-gnu')
+
+# Build every binary for 64-bit Intel Linux (x86_64-unknown-linux-gnu)
+build-linux-amd64: (cross-build 'x86_64-unknown-linux-gnu')
+
+# Build every binary for every supported target
+build-all: build-macos build-linux-arm64 build-linux-amd64
+
+# Run a release build for TARGET in the cross compilation container.  The
+# working tree is bind mounted, so the binaries land in target/TARGET/release
+# on the host; the registry lives in a named volume so the downloads survive
+# between runs and stay out of the working tree.
+[private]
+cross-build TARGET: build-image
+    docker run --rm \
+        -v {{justfile_directory()}}:/src \
+        -v starfish-cargo-registry:/usr/local/cargo/registry \
+        starfish-build:latest \
+        cargo build --release --target {{TARGET}}
+
 # Create the PostgreSQLdatabase
 create-db:
   ./scripts/create-db.fish
