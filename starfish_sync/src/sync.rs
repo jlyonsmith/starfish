@@ -5,7 +5,7 @@
 //! thing that is taken away is membership of a group the controller *did* send,
 //! because that is the only way to revoke access.
 
-use crate::system::{SUDO_GROUP, System};
+use crate::system::{LEGACY_SUDO_GROUP, SUDO_GROUP, System};
 use crate::validate;
 use starfish_msg::{HostConfig, ItemReport, Status, SyncReport, UserAccount};
 use std::collections::BTreeSet;
@@ -20,12 +20,22 @@ const AUTHORIZED_KEYS_HEADER: &str =
 /// One failure does not stop the rest: every item is attempted and reported on
 /// its own, so a single broken account cannot hold up everybody else's access.
 pub fn sync(system: &dyn System, config: &HostConfig) -> SyncReport {
-    let groups = config
-        .groups
-        .iter()
-        .map(|group| ItemReport {
-            name: group.name.clone(),
-            status: into_status(sync_group(system, &group.name)),
+    // The sudo group is created here rather than being sent by the controller,
+    // which knows nothing about it: it is not a security group anybody
+    // configures, but it has to exist before a sudoer can be put in it.  Only
+    // when somebody actually needs it, so a host with no sudoers does not grow
+    // a group it will never use.
+    let mut names: Vec<String> = config.groups.iter().map(|g| g.name.clone()).collect();
+
+    if config.users.iter().any(|user| user.is_sudoer) && !names.iter().any(|n| n == SUDO_GROUP) {
+        names.push(SUDO_GROUP.to_string());
+    }
+
+    let groups = names
+        .into_iter()
+        .map(|name| ItemReport {
+            status: into_status(sync_group(system, &name)),
+            name,
         })
         .collect();
 
@@ -39,6 +49,12 @@ pub fn sync(system: &dyn System, config: &HostConfig) -> SyncReport {
         .collect();
 
     managed.insert(SUDO_GROUP);
+
+    // Only ever removed, never added: this is how sudo was granted before
+    // starfish-sudo, and an upgraded host has users sitting in it. Managing it
+    // is what moves them off; leaving it out would stand a grant that no later
+    // revocation could reach.
+    managed.insert(LEGACY_SUDO_GROUP);
 
     let users = config
         .users
@@ -438,6 +454,42 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn moves_a_sudoer_off_the_group_an_older_agent_used() {
+        // A host configured before starfish-sudo existed: ada is a sudoer, and
+        // her grant is membership of Ubuntu's own `sudo`.
+        let system = FakeSystem::default()
+            .with_group(LEGACY_SUDO_GROUP)
+            .with_user("ada", "Ada Lovelace", &[LEGACY_SUDO_GROUP]);
+
+        let report = sync(&system, &config(&[], vec![user("ada", &[], true)]));
+
+        assert_eq!(status(&report, "ada"), Status::Updated);
+        assert!(
+            system.user("ada").groups.contains(SUDO_GROUP),
+            "the new grant was not made: {:?}",
+            system.user("ada").groups
+        );
+        assert!(
+            !system.user("ada").groups.contains(LEGACY_SUDO_GROUP),
+            "the old grant was left behind: {:?}",
+            system.user("ada").groups
+        );
+    }
+
+    #[test]
+    fn never_grants_the_group_an_older_agent_used() {
+        let system = FakeSystem::default().with_group(LEGACY_SUDO_GROUP);
+
+        sync(&system, &config(&[], vec![user("ada", &[], true)]));
+
+        assert!(
+            !system.user("ada").groups.contains(LEGACY_SUDO_GROUP),
+            "a new sudoer was put in Ubuntu's sudo group: {:?}",
+            system.user("ada").groups
+        );
+    }
+
+    #[test]
     fn leaves_a_host_that_already_matches_alone() {
         let system = FakeSystem::default().with_group("developers").with_user(
             "ada",
@@ -600,8 +652,10 @@ pub(crate) mod tests {
             status(&report, "daemon")
         );
 
-        // Nothing at all was done to it.
-        assert!(system.actions().is_empty(), "{:?}", system.actions());
+        // Nothing at all was done to the account.  The sudo group is created
+        // because the configuration asked for a sudoer; the point here is that
+        // this account never joined it.
+        assert_eq!(system.actions(), vec!["create_group starfish-sudo"]);
         assert_eq!(system.user("daemon").full_name, "daemon");
         assert!(!system.user("daemon").groups.contains(SUDO_GROUP));
     }

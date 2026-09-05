@@ -1,0 +1,20 @@
+# Install as /etc/sudoers.d/starfish-sudo, owned by root, mode 0440:
+#
+#   install -o root -g root -m 0440 starfish-sudoers /etc/sudoers.d/starfish-sudo
+#   visudo -c -f /etc/sudoers.d/starfish-sudo
+#
+# Starfish creates accounts with no password at all -- people authenticate with
+# an SSH key -- so a managed sudoer can never answer the password prompt that
+# Ubuntu's stock rule demands:
+#
+#   %sudo ALL=(ALL:ALL) ALL
+#
+# Without something like this file, `--sudoer` puts a user in a group and they
+# still cannot run a single command.
+#
+# The group named here is Starfish's own rather than `sudo`, so that granting
+# passwordless root to the accounts Starfish manages cannot quietly change what
+# a local administrator who is already in `sudo` has to do.  Membership is
+# still the whole grant: starfish-sync adds and removes users from this group,
+# and revoking sudo means removing them from it.
+%starfish-sudo ALL=(ALL:ALL) NOPASSWD: ALL

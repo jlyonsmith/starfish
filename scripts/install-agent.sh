@@ -20,6 +20,7 @@ AGENT_BIN=/usr/local/bin/starfish-agent
 HELPER_DIR=/usr/local/lib/starfish
 HELPER_BIN="$HELPER_DIR/starfish-sync"
 SUDOERS=/etc/sudoers.d/starfish
+SUDOERS_GRANT=/etc/sudoers.d/starfish-sudo
 CONF=/etc/starfish_agent.conf
 UNIT=/etc/systemd/system/starfish-agent.service
 SERVICE_USER=starfish
@@ -125,7 +126,8 @@ prompt() {
 command -v systemctl > /dev/null || fail "this host does not use systemd"
 command -v visudo > /dev/null || fail "visudo is not installed (apt install sudo)"
 
-for file in starfish-agent starfish-sync starfish-agent.service starfish-sync.sudoers; do
+for file in starfish-agent starfish-sync starfish-agent.service starfish-sync.sudoers \
+    starfish-sudoers; do
     [ -f "$SCRIPT_DIR/$file" ] || fail "$file is not beside this script, in $SCRIPT_DIR"
 done
 
@@ -217,15 +219,27 @@ install_file "$SCRIPT_DIR/starfish-agent" "$AGENT_BIN" 0755 root root || true
 
 info "Sudo rule"
 
-# Checked before it is installed: a syntactically broken file in sudoers.d
+# Checked before they are installed: a syntactically broken file in sudoers.d
 # breaks sudo for everyone on the host, root included.
-sudoers_tmp=$(mktemp)
-cp "$SCRIPT_DIR/starfish-sync.sudoers" "$sudoers_tmp"
-chmod 0440 "$sudoers_tmp"
-visudo -c -q -f "$sudoers_tmp" || { rm -f "$sudoers_tmp"; fail "the sudoers file is not valid"; }
+#
+# Two rules, doing unrelated jobs.  The first lets the agent reach root through
+# the helper.  The second is what makes `--sudoer` mean anything: managed
+# accounts have no password, so without a NOPASSWD rule a user granted sudo
+# would be in the group and still unable to run a single command.
+install_sudoers() {
+    local src=$1 dest=$2 tmp
 
-install_file "$sudoers_tmp" "$SUDOERS" 0440 root root || true
-rm -f "$sudoers_tmp"
+    tmp=$(mktemp)
+    cp "$src" "$tmp"
+    chmod 0440 "$tmp"
+    visudo -c -q -f "$tmp" || { rm -f "$tmp"; fail "$src is not a valid sudoers file"; }
+
+    install_file "$tmp" "$dest" 0440 root root || true
+    rm -f "$tmp"
+}
+
+install_sudoers "$SCRIPT_DIR/starfish-sync.sudoers" "$SUDOERS"
+install_sudoers "$SCRIPT_DIR/starfish-sudoers" "$SUDOERS_GRANT"
 
 # --- the internal CA --------------------------------------------------------
 

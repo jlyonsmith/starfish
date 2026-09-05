@@ -37,10 +37,12 @@ COPY --from=build /out/starfish-agent /usr/local/bin/starfish-agent
 # account whose only privilege is one sudo rule naming one argument-less
 # command.
 COPY deploy/starfish-sync.sudoers /etc/sudoers.d/starfish
+COPY deploy/starfish-sudoers /etc/sudoers.d/starfish-sudo
 
 RUN useradd --system --no-create-home --shell /usr/sbin/nologin starfish \
-    && chown root:root /etc/sudoers.d/starfish \
-    && chmod 0440 /etc/sudoers.d/starfish \
-    && visudo -c -f /etc/sudoers.d/starfish
+    && chown root:root /etc/sudoers.d/starfish /etc/sudoers.d/starfish-sudo \
+    && chmod 0440 /etc/sudoers.d/starfish /etc/sudoers.d/starfish-sudo \
+    && visudo -c -f /etc/sudoers.d/starfish \
+    && visudo -c -f /etc/sudoers.d/starfish-sudo
 
 CMD ["sleep", "infinity"]

@@ -92,9 +92,21 @@ starfish_admin ──writes──> PostgreSQL <──reads── starfishd ─�
   (name charset, uid ≥ 1000, no colon or newline in a full name, key paths under the home
   `getent` reports) because it cannot assume the controller or database is trustworthy.
 - **Syncing is additive except for group membership.** Users and groups are created, never
-  deleted. Membership is removed only for groups the controller sent, plus `sudo` — that set
-  is built in `sync::sync` and is the only revocation path. `authorized_keys` is owned
-  outright and overwritten.
+  deleted. Membership is removed only for groups the controller sent, plus `SUDO_GROUP` —
+  that set is built in `sync::sync` and is the only revocation path. `authorized_keys` is
+  owned outright and overwritten.
+- **Sudo is `starfish-sudo`, not Ubuntu's `sudo`** (`system::SUDO_GROUP`). Managed accounts
+  are created with no password, so they could never satisfy the stock
+  `%sudo ALL=(ALL:ALL) ALL` rule; `deploy/starfish-sudoers` gives `starfish-sudo` a
+  `NOPASSWD` rule, installed to `/etc/sudoers.d/starfish-sudo`. Using a group of Starfish's
+  own keeps that grant away from accounts it does not manage. `sync::sync` creates the group
+  when a configuration contains any sudoer, so it never appears on a host with none, and it
+  is the one group in the report the controller did not send. Both integration suites assert
+  `sudo -n` actually succeeds — group membership alone passed even when sudo was unusable.
+- **`system::LEGACY_SUDO_GROUP` ("sudo") is managed for removal only.** It is in `managed`
+  but never in `wanted`, so an upgrade moves existing sudoers off it. Dropping it from the
+  set instead would strand the old grant forever, because Starfish never removes anybody
+  from a group it does not manage.
 - **Host changes go through `system::System`.** The `Ubuntu` implementation shells out to
   `useradd`, `usermod`, `groupadd`, `gpasswd`, `getent` and `id` (`gpasswd`, never
   `usermod --groups`, which would drop unmanaged groups). The trait exists so `sync.rs` can

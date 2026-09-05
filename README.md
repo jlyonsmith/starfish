@@ -50,7 +50,9 @@ on every host in it. A host group also defines **security groups**, which are
 the Linux groups its users may belong to; each user is in whatever subset of
 them you choose. Users own any number of **SSH keys**, which the agent installs.
 
-Sudo is per user per host group, set with `--sudoer`.
+Sudo is per user per host group, set with `--sudoer`. It is granted by
+membership of the `starfish-sudo` group; see
+[What the agent does to a host](#what-the-agent-does-to-a-host).
 
 ## Installing
 
@@ -463,13 +465,23 @@ you point it at a live machine:
 - **Group membership is removed**, but only for groups the controller sent. A
   user in `docker` keeps `docker` even though Starfish knows nothing about it.
   This is the only way to revoke access, which is why it is the exception.
-- **Sudo is membership of the `sudo` group**, granted and revoked like any other
-  managed group rather than through a `sudoers.d` file.
+- **Sudo is membership of the `starfish-sudo` group**, granted and revoked like
+  any other managed group rather than through a per-user `sudoers.d` file. That
+  group, not Ubuntu's own `sudo`, because managed accounts have **no password
+  at all** — people authenticate with an SSH key — and so could never answer
+  the prompt that the stock `%sudo ALL=(ALL:ALL) ALL` rule demands.
+  `deploy/starfish-sudoers` gives `starfish-sudo` a `NOPASSWD` rule instead,
+  which the agent installer puts in `/etc/sudoers.d/starfish-sudo`. Keeping it
+  off `sudo` means granting passwordless root to the accounts Starfish manages
+  cannot quietly change what a local administrator already in `sudo` has to do.
+  The group is created on first use and, like every other group, never deleted.
 - **`~/.ssh/authorized_keys` is owned outright.** The agent writes a header and
   exactly the keys in the database, so local edits are overwritten. A user with
   no keys in the database ends up with a file containing only the header, and
   loses key based access — populate `ssh_keys` before rolling agents out.
-- New users are created with `--create-home` and `/bin/bash`.
+- New users are created with `--create-home` and `/bin/bash`, and **no
+  password**. The account is usable over SSH with a key and cannot be logged
+  into with a password at all.
 
 Everything goes through standard Ubuntu tools: `useradd`, `usermod`, `groupadd`,
 `gpasswd`, `getent` and `id`. Group membership uses `gpasswd`, not

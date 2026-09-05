@@ -183,7 +183,7 @@ bundle TAG='':
     agent="starfish-agent-$tag-$target"
     mkdir -p "$staging/$agent"
     cp "$out/starfish-agent" "$out/starfish-sync" "$staging/$agent/"
-    cp deploy/starfish-agent.service deploy/starfish-sync.sudoers "$staging/$agent/"
+    cp deploy/starfish-agent.service deploy/starfish-sync.sudoers deploy/starfish-sudoers "$staging/$agent/"
     cp scripts/install-agent.sh README.md "$staging/$agent/"
 
     controller="starfish-controller-$tag-$target"

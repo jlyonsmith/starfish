@@ -51,7 +51,8 @@ container=$(docker create "$IMAGE")
 docker cp "$container:/usr/local/bin/starfish-agent" "$STAGE/starfish-agent"
 docker cp "$container:/usr/local/lib/starfish/starfish-sync" "$STAGE/starfish-sync"
 docker rm -f "$container" > /dev/null
-cp deploy/starfish-sync.sudoers deploy/starfish-agent.service scripts/install-agent.sh "$STAGE/"
+cp deploy/starfish-sync.sudoers deploy/starfish-sudoers deploy/starfish-agent.service \
+    scripts/install-agent.sh "$STAGE/"
 
 # --- the VM ----------------------------------------------------------------
 if ! limactl list -q 2>/dev/null | grep -qx "$VM"; then
@@ -105,7 +106,8 @@ info "Installing the agent in the VM with scripts/install-agent.sh"
 limactl shell "$VM" sudo rm -rf /tmp/starfish
 limactl shell "$VM" mkdir -p /tmp/starfish
 
-for file in starfish-agent starfish-sync starfish-sync.sudoers starfish-agent.service install-agent.sh; do
+for file in starfish-agent starfish-sync starfish-sync.sudoers starfish-sudoers \
+    starfish-agent.service install-agent.sh; do
     limactl copy "$STAGE/$file" "$VM:/tmp/starfish/$file"
 done
 
@@ -181,8 +183,22 @@ check "the user exists" "Ada Lovelace" \
     "$(limactl shell "$VM" getent passwd ada | cut -d: -f5)"
 check "the security group was created" "0" \
     "$(limactl shell "$VM" sh -c 'id -nG ada | grep -qw developers; echo $?')"
+# `grep -w sudo` is not good enough here: a hyphen is not a word character, so
+# it matches inside "starfish-sudo" too.  Exact whole-line matching keeps the
+# two groups distinguishable.
 check "sudo was granted" "0" \
-    "$(limactl shell "$VM" sh -c 'id -nG ada | grep -qw sudo; echo $?')"
+    "$(limactl shell "$VM" sh -c "id -nG ada | tr ' ' '\n' | grep -qx starfish-sudo; echo \$?")"
+
+# Membership is not the point; being able to run something is.  Managed
+# accounts have no password, so without the NOPASSWD rule in
+# deploy/starfish-sudoers this is a group ada would sit in uselessly.
+check "sudo actually works for the granted user" "0" \
+    "$(limactl shell "$VM" sudo -u ada sudo -n /bin/true > /dev/null 2>&1; echo $?)"
+
+# Ubuntu's own sudo group is left alone, so a local administrator already in it
+# is unaffected by anything Starfish does.
+check "Ubuntu's sudo group is untouched" "1" \
+    "$(limactl shell "$VM" sh -c "id -nG ada | tr ' ' '\n' | grep -qx sudo; echo \$?")"
 # Read as root: .ssh is 700 and owned by ada, so being unable to look inside it
 # as anyone else is the mode doing its job.
 check "the key directory is owned and moded correctly" "ada:ada 700" \

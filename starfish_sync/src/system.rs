@@ -8,8 +8,23 @@
 use anyhow::{Context, bail};
 use std::path::{Path, PathBuf};
 
-/// The group that grants `sudo` on Ubuntu.
-pub const SUDO_GROUP: &str = "sudo";
+/// The group that grants sudo.
+///
+/// Deliberately not Ubuntu's own `sudo`. Managed accounts are created with no
+/// password — authentication is by SSH key — so they could never answer the
+/// prompt that the stock `%sudo ALL=(ALL:ALL) ALL` rule demands. This group is
+/// the one `deploy/starfish-sudoers` gives `NOPASSWD` to, which keeps that
+/// grant away from every account Starfish does not manage.
+pub const SUDO_GROUP: &str = "starfish-sudo";
+
+/// How sudo used to be granted, before [`SUDO_GROUP`] existed.
+///
+/// Still managed, so that membership left behind by an older agent is taken
+/// away on the next sync, but never granted. Without this an upgrade would
+/// strand a grant nobody ever revokes: `sudo` would no longer be a group the
+/// controller sends, and Starfish never removes anybody from a group it does
+/// not manage.
+pub const LEGACY_SUDO_GROUP: &str = "sudo";
 
 /// The shell new users are given.
 const DEFAULT_SHELL: &str = "/bin/bash";

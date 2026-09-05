@@ -90,9 +90,12 @@ mod tests {
 
         assert_eq!(report.hostname, "web-1");
         assert_eq!(report.generation, 9);
-        assert_eq!(report.groups.len(), 1);
+        // Two groups: the one the controller sent, and the sudo group, created
+        // because ada is a sudoer and no configuration ever names it.
+        assert_eq!(report.groups.len(), 2);
         assert_eq!(report.users.len(), 1);
         assert_eq!(report.groups[0].name, "developers");
+        assert_eq!(report.groups[1].name, "starfish-sudo");
         assert_eq!(report.users[0].name, "ada");
     }
 

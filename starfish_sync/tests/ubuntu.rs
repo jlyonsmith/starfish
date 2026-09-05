@@ -25,6 +25,11 @@ use std::process::{Command, Stdio};
 const IMAGE: &str = "starfish-test:latest";
 const HELPER: &str = "/usr/local/lib/starfish/starfish-sync";
 
+/// Mirrors `system::SUDO_GROUP`. The helper is a binary crate with nothing to
+/// import from, so the name is repeated here; the assertions below fail loudly
+/// if the two ever drift.
+const SUDO_GROUP: &str = "starfish-sudo";
+
 /// A container that removes itself, so a failing assertion does not leave one
 /// running.
 struct Container {
@@ -273,15 +278,42 @@ fn synchronizes_a_real_ubuntu_host() {
 
     assert_eq!(status(&host.sync(&sudoer), "ada"), Status::Updated);
     assert!(
-        host.groups("ada").contains(&"sudo".to_string()),
+        host.groups("ada").contains(&SUDO_GROUP.to_string()),
         "sudo was not granted: {:?}",
         host.groups("ada")
     );
 
+    // Membership is not the point; being able to run something is.  Managed
+    // accounts have no password, so without the NOPASSWD rule in
+    // deploy/starfish-sudoers this is a group they sit in uselessly.
+    let (status_code, _, stderr) = host.try_exec(Some("ada"), &["sudo", "-n", "/bin/true"], b"");
+
+    assert!(
+        status_code.success(),
+        "a granted sudoer could not actually use sudo: {}",
+        String::from_utf8_lossy(&stderr)
+    );
+
     assert_eq!(status(&host.sync(&base), "ada"), Status::Updated);
     assert!(
-        !host.groups("ada").contains(&"sudo".to_string()),
+        !host.groups("ada").contains(&SUDO_GROUP.to_string()),
         "sudo was not revoked: {:?}",
+        host.groups("ada")
+    );
+
+    // ...and revoking it takes the capability away, not just the membership.
+    let (status_code, _, _) = host.try_exec(Some("ada"), &["sudo", "-n", "/bin/true"], b"");
+
+    assert!(
+        !status_code.success(),
+        "sudo still worked after it was revoked"
+    );
+
+    // Ubuntu's own `sudo` group is left out of this entirely, so a local
+    // administrator already in it is unaffected by anything Starfish does.
+    assert!(
+        !host.groups("ada").contains(&"sudo".to_string()),
+        "a managed sudoer was put in Ubuntu's sudo group: {:?}",
         host.groups("ada")
     );
 
