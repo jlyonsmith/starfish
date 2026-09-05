@@ -3,7 +3,7 @@
     major: 0,
     minor: 1,
     patch: 0,
-    build: 0,
+    build: 1,
     tz: "America/Los_Angeles",
   },
   calcVars: {
@@ -18,7 +18,7 @@
   targets: [
     {
       description: "Cargo Package",
-      files: ["starfishd/Cargo.toml", "starfish_agent/Cargo.toml", "starfish_admin/Cargo.toml"],
+      files: ["starfishd/Cargo.toml", "starfish_agent/Cargo.toml", "starfish_admin/Cargo.toml", "starfish_sync/Cargo.toml"],
       updates: [
         {
           search: '^(?P<begin>version\\s*=\\s*")\\d+\\.\\d+\\.\\d+(?P<end>"\\s*)$',
