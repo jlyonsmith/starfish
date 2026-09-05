@@ -51,7 +51,7 @@ container=$(docker create "$IMAGE")
 docker cp "$container:/usr/local/bin/starfish-agent" "$STAGE/starfish-agent"
 docker cp "$container:/usr/local/lib/starfish/starfish-sync" "$STAGE/starfish-sync"
 docker rm -f "$container" > /dev/null
-cp deploy/starfish-sync.sudoers deploy/starfish-agent.service scripts/provision-systemd.sh "$STAGE/"
+cp deploy/starfish-sync.sudoers deploy/starfish-agent.service scripts/install-agent.sh "$STAGE/"
 
 # --- the VM ----------------------------------------------------------------
 if ! limactl list -q 2>/dev/null | grep -qx "$VM"; then
@@ -101,17 +101,22 @@ sleep 4
 kill -0 "$CONTROLLER_PID" 2>/dev/null || { cat "$STAGE/controller.log"; fail "the controller did not start"; }
 
 # --- install and start the unit --------------------------------------------
-info "Installing Starfish in the VM and starting the unit"
+info "Installing the agent in the VM with scripts/install-agent.sh"
 limactl shell "$VM" sudo rm -rf /tmp/starfish
 limactl shell "$VM" mkdir -p /tmp/starfish
 
-for file in starfish-agent starfish-sync starfish-sync.sudoers starfish-agent.service provision-systemd.sh; do
+for file in starfish-agent starfish-sync starfish-sync.sudoers starfish-agent.service install-agent.sh; do
     limactl copy "$STAGE/$file" "$VM:/tmp/starfish/$file"
 done
 
-limactl shell "$VM" sudo env \
-    CONTROLLER_URL="ws://$HOST_IP:$LISTEN_PORT" AGENT_KEY="$AGENT_KEY" \
-    bash /tmp/starfish/provision-systemd.sh
+# The real installer, not a copy of it: this is the only place the shipped
+# install-agent.sh is exercised, so a break in it fails the suite.
+limactl shell "$VM" sudo bash /tmp/starfish/install-agent.sh \
+    --non-interactive \
+    --controller-url "ws://$HOST_IP:$LISTEN_PORT" \
+    --agent-key "$AGENT_KEY" \
+    --heartbeat-secs 5 \
+    --log-level debug
 
 info "Waiting for the agent to configure the host"
 for _ in $(seq 1 30); do

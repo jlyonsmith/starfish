@@ -52,6 +52,67 @@ them you choose. Users own any number of **SSH keys**, which the agent installs.
 
 Sudo is per user per host group, set with `--sudoer`.
 
+## Installing
+
+Every release publishes four archives: an agent and a controller bundle for
+each of `aarch64-unknown-linux-gnu` and `x86_64-unknown-linux-gnu`. Each
+unpacks into a directory holding the binaries, the deployment files and the
+install script for that half.
+
+The controller first, because agents need its address and a key from it:
+
+```sh
+unzip starfish-controller-v0.1.0-x86_64-unknown-linux-gnu.zip
+cd starfish-controller-v0.1.0-x86_64-unknown-linux-gnu
+sudo ./install-controller.sh
+```
+
+It asks for the address of the PostgreSQL server, creates the database if it is
+missing, applies the schema and then `roles.sql`, and starts the controller
+under systemd as an unprivileged `starfishd` account. Passwords for the
+`starfish_owner` and `starfishd` roles are generated rather than chosen, and
+written to `/etc/starfish/owner.password` and `/etc/starfish/db.password` at
+mode `0600`. It also offers the two choices worth stopping for: a TLS
+certificate, and the group that may use the admin socket.
+
+Then each host, with the key `starfish-admin host add` printed:
+
+```sh
+unzip starfish-agent-v0.1.0-aarch64-unknown-linux-gnu.zip
+cd starfish-agent-v0.1.0-aarch64-unknown-linux-gnu
+sudo ./install-agent.sh
+```
+
+It asks for the controller URL and the agent key, and installs the service
+account, the privileged helper, the sudo rule and the unit. For a `wss://`
+controller behind an internal CA it offers to install that CA, without which
+the agent cannot verify the controller and will not connect.
+
+Both scripts are safe to run again. Everything is compared before it is
+written, so a second run on a correctly configured host reports that nothing
+changed and does not restart the service. Both take flags instead of prompts —
+`--help` lists them — and `--non-interactive` never prompts, which is how
+`just test-systemd` drives the agent installer. Values already in the
+configuration file are the defaults, so a re-run with no arguments repairs an
+installation without changing it.
+
+### The controller's admin socket
+
+`/run` is writable only by root, and the controller deliberately is not root,
+so its socket lives in a systemd `RuntimeDirectory` at
+`/run/starfishd/starfishd.sock`. `/etc/tmpfiles.d/starfishd.conf` points
+`/run/starfishd.sock` at it, recreated on each boot because `/run` is emptied,
+so `starfish-admin` still finds the socket at its default path.
+
+Setting `admin_socket_group` also needs the controller's own account to be in
+that group: it hands the socket over with `chown`, and the kernel only allows
+that for a group the process actually belongs to. The installer writes that as
+a `SupplementaryGroups=` drop-in. Without it the controller starts, fails on
+the socket, and restarts forever.
+
+The Quick start below is the same work done by hand. It is still the better
+description of *what* the scripts are doing, and why.
+
 ## Quick start
 
 Build everything and create the database:
@@ -325,8 +386,15 @@ already there:
 createdb starfish
 starfish-admin -p postgresql://starfish_owner@db/starfish \
     --password-file /etc/starfish/owner.password init-db
-psql -d starfish -f deploy/roles.sql
+psql -d starfish -f deploy/roles.sql \
+    -v db_name=starfish \
+    -v owner_password='...' -v controller_password='...'
 ```
+
+Passing no password for a role leaves whatever it already has alone, which is
+what a peer authenticated deployment wants. Every statement in the file
+converges rather than failing on what already exists, so it can be re-run.
+`scripts/install-controller.sh` does all of the above.
 
 ### Passwords
 
@@ -506,11 +574,11 @@ from macOS needs a linker that is not installed by default. The first build
 takes a few minutes; afterwards a cargo cache mount keeps it quick.
 
 **`test-systemd`** goes one step further, into a [Lima](https://lima-vm.io) VM
-running real Ubuntu with real systemd. It installs
-`deploy/starfish-agent.service` and `deploy/starfish-sync.sudoers` as the
-Quick start describes, runs the controller on the Mac, and then checks that the
-unit starts, that the agent is unprivileged inside its sandbox, and that a real
-account appears in the VM. That last part exercises the whole chain at once:
+running real Ubuntu with real systemd. It runs
+`scripts/install-agent.sh` — the same script the release archive ships, so the
+installer cannot drift from what it is meant to do — runs the controller on the
+Mac, and then checks that the unit starts, that the agent is unprivileged
+inside its sandbox, and that a real account appears in the VM. That last part exercises the whole chain at once:
 systemd sandbox, agent, sudo, helper, `useradd`.
 
 It also pins the three sandbox settings that must stay *off*. The helper is a
@@ -520,6 +588,33 @@ and each silently break account management. See [Privileges](#privileges).
 
 The VM is created on first use and left running afterwards; remove it with
 `limactl delete -f starfish-test`.
+
+### Releasing
+
+`just release [incrPatch|incrMinor|incrMajor]` drives the version from
+`version.json5` into the three binary crates with `stampver`, runs `test-all`,
+tags and pushes, and then cross compiles both Linux targets. Do not hand-edit
+those version fields.
+
+```sh
+just build-macos          # aarch64-apple-darwin, a native build
+just build-linux-arm64    # aarch64-unknown-linux-gnu, in Docker
+just build-linux-amd64    # x86_64-unknown-linux-gnu, in Docker
+just build-all            # all three
+
+just release              # version, test, tag, push, build
+just bundle               # the four archives, into scratch/publish
+just publish              # upload them to a draft GitHub release
+```
+
+The two Linux targets build inside `docker/Dockerfile.build` on a local Colima
+VM; `aarch64-apple-darwin` is a plain native build, because cross compiling to
+Darwin would need the macOS SDK in the container.
+
+`just publish` leaves the release a **draft**, with placeholder notes. Write the
+notes on GitHub and publish it there. Running it again re-uploads the archives
+over the existing ones, so a rebuild can be pushed to a draft that is already
+open.
 
 ## Known limitations
 

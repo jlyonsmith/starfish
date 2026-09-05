@@ -1,0 +1,68 @@
+# Install as /etc/systemd/system/starfishd.service.
+#
+# Create the service account first.  Unlike the agent's, it never changes the
+# host and never needs root:
+#
+#   adduser --system --group --no-create-home --shell /usr/sbin/nologin starfishd
+#
+[Unit]
+Description=Starfish user synchronization controller
+Documentation=https://github.com/jlyonsmith/starfish
+After=network-online.target
+Wants=network-online.target
+
+# Ordering only, and harmless on a host with no local PostgreSQL.  The
+# installer adds a Wants= drop-in when the database really is on this host.
+After=postgresql.service
+
+# Agents reconnect on their own and the controller retries the database, so
+# neither is a reason to give up and stay down.  This belongs in [Unit];
+# systemd ignores it with a warning if it is put under [Service].
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=starfishd
+Group=starfishd
+ExecStart=/usr/local/bin/starfishd --config /etc/starfishd.conf
+Restart=always
+RestartSec=5
+
+# /run is root owned, so the admin socket cannot simply be created there by an
+# unprivileged process.  systemd makes this directory instead, owned by the
+# service account and emptied on every start, which also means a stale socket
+# from a killed controller can never be left behind.  /etc/starfishd.conf
+# points admin_socket inside it, and /run/starfishd.sock is a symlink to it so
+# `starfish-admin` still works with its default.
+RuntimeDirectory=starfishd
+RuntimeDirectoryMode=0755
+
+# The agent's unit has to leave most of this off, because sudo starts the
+# privileged helper as a child of it and the helper needs to write /etc and
+# /home.  The controller has no such constraint: it reads a config file, talks
+# to PostgreSQL, and serves a socket.  So it gets the full treatment.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

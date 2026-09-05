@@ -6,22 +6,58 @@
 --   createdb starfish
 --   starfish-admin -p postgresql://starfish_owner@db/starfish \
 --       --password-file /etc/starfish/owner.password init-db
---   psql -d starfish -f roles.sql
+--   psql -d starfish -f roles.sql \
+--       -v db_name=starfish \
+--       -v owner_password='...' -v controller_password='...'
 --
--- Replace every CHANGEME before running, or better, create the roles without
--- passwords and use peer authentication over a Unix socket, where the operating
--- system user *is* the database role and there is no password to leak.
+-- `scripts/install-controller.sh` does all of the above.  Running it, or this
+-- file, a second time is safe: every statement here converges rather than
+-- failing on what already exists.
+--
+-- Better than either password: create the roles without one and use peer
+-- authentication over a Unix socket, where the operating system user *is* the
+-- database role and there is nothing to leak.  Pass an empty password for a
+-- role to leave whatever it already has alone.
 --
 -- `starfish-admin` is a convenience layer over SQL, not a security boundary:
 -- anyone holding these credentials can use psql instead.  All the enforcement
 -- has to be here.
+
+\if :{?db_name}
+\else
+\set db_name 'starfish'
+\endif
+\if :{?owner_password}
+\else
+\set owner_password ''
+\endif
+\if :{?controller_password}
+\else
+\set controller_password ''
+\endif
 
 -- ---------------------------------------------------------------------------
 -- Owner.  Owns the tables, so only it can DROP or ALTER them.  Used by
 -- `starfish-admin init-db` and nothing else; it should not be the role the
 -- controller or administrators connect with day to day.
 -- ---------------------------------------------------------------------------
-CREATE ROLE starfish_owner LOGIN PASSWORD 'CHANGEME';
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'starfish_owner') THEN
+        CREATE ROLE starfish_owner LOGIN;
+    END IF;
+END
+$$;
+
+-- Setting a password is conditional, so a re-run that passes none leaves the
+-- existing one alone and a peer authenticated deployment never grows one.
+-- psql does not expand :variables inside a DO block's body, so the statement is
+-- built here and run by expanding it on the next line; `format %L` quotes the
+-- password, and an empty one leaves nothing to run but a bare semicolon.
+SELECT CASE WHEN :'owner_password' = '' THEN ''
+            ELSE format('ALTER ROLE starfish_owner PASSWORD %L', :'owner_password')
+       END AS set_owner_password \gset
+:set_owner_password ;
 
 -- ---------------------------------------------------------------------------
 -- Controller.  This is the network facing component, and it needs almost
@@ -32,9 +68,20 @@ CREATE ROLE starfish_owner LOGIN PASSWORD 'CHANGEME';
 -- it can still send agents whatever it likes over an existing connection, since
 -- agents trust it; this limits persistence, not a live compromise.
 -- ---------------------------------------------------------------------------
-CREATE ROLE starfishd LOGIN PASSWORD 'CHANGEME';
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'starfishd') THEN
+        CREATE ROLE starfishd LOGIN;
+    END IF;
+END
+$$;
 
-GRANT CONNECT ON DATABASE starfish TO starfishd;
+SELECT CASE WHEN :'controller_password' = '' THEN ''
+            ELSE format('ALTER ROLE starfishd PASSWORD %L', :'controller_password')
+       END AS set_controller_password \gset
+:set_controller_password ;
+
+GRANT CONNECT ON DATABASE :"db_name" TO starfishd;
 GRANT USAGE ON SCHEMA public TO starfishd;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO starfishd;
 -- `updated_at` is in the list because the schema marks it `#[auto]`, so every
@@ -52,9 +99,15 @@ ALTER DEFAULT PRIVILEGES FOR ROLE starfish_owner IN SCHEMA public
 -- so `session_user` names a human.  A shared login makes any audit trail
 -- worthless.
 -- ---------------------------------------------------------------------------
-CREATE ROLE starfish_admins;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'starfish_admins') THEN
+        CREATE ROLE starfish_admins;
+    END IF;
+END
+$$;
 
-GRANT CONNECT ON DATABASE starfish TO starfish_admins;
+GRANT CONNECT ON DATABASE :"db_name" TO starfish_admins;
 GRANT USAGE ON SCHEMA public TO starfish_admins;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO starfish_admins;
 
@@ -71,5 +124,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE starfish_owner IN SCHEMA public
 -- ---------------------------------------------------------------------------
 -- Nobody else.
 -- ---------------------------------------------------------------------------
-REVOKE ALL ON DATABASE starfish FROM PUBLIC;
+REVOKE ALL ON DATABASE :"db_name" FROM PUBLIC;
 REVOKE ALL ON SCHEMA public FROM PUBLIC;

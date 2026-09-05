@@ -139,8 +139,97 @@ release OPERATION='incrPatch':
   info "Pushing to 'origin'"
   git push --follow-tags
 
-  info "Finished release of '"$name"' on branch '"$branch"'. You can publish the crate."
+  info "Building the Linux binaries"
+  just build-linux-arm64 build-linux-amd64
+
+  info "Finished release of '"$name"' "$tagName". Run 'just publish' to draft the GitHub release."
   exit 0
+
+# Package the release archives into scratch/publish, without uploading anything
+bundle TAG='':
+  #!/usr/bin/env bash
+  # One archive per component per platform, each holding the binaries, the
+  # deployment files and the install script that goes with them, so an archive
+  # unpacks into a directory the installer can run from unchanged.
+  set -euo pipefail
+
+  # An inherited CDPATH makes `cd` echo where it went, and can resolve a
+  # relative path somewhere else entirely.
+  unset CDPATH
+
+  info() { printf '\033[32m👉 \033[0m%s\n' "$*"; }
+  error() { printf '\033[31m💥 \033[0m%s\n' "$*" >&2; exit 1; }
+
+  command -v zip > /dev/null || error "zip is not installed"
+
+  # stampver has already written this version into the crates, so the tag it
+  # belongs to is not guessed separately.
+  version=$(sed -n 's/^version = "\(.*\)"$/\1/p' starfishd/Cargo.toml | head -1)
+  tag='{{TAG}}'
+  [ -n "$tag" ] || tag="v$version"
+
+  staging=scratch/publish
+  rm -rf "$staging"
+  mkdir -p "$staging"
+
+  for target in aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+    out="target/$target/release"
+
+    for binary in starfishd starfish-admin starfish-agent starfish-sync; do
+      [ -f "$out/$binary" ] \
+        || error "$out/$binary is missing; run 'just build-linux-arm64 build-linux-amd64'"
+    done
+
+    agent="starfish-agent-$tag-$target"
+    mkdir -p "$staging/$agent"
+    cp "$out/starfish-agent" "$out/starfish-sync" "$staging/$agent/"
+    cp deploy/starfish-agent.service deploy/starfish-sync.sudoers "$staging/$agent/"
+    cp scripts/install-agent.sh README.md "$staging/$agent/"
+
+    controller="starfish-controller-$tag-$target"
+    mkdir -p "$staging/$controller"
+    cp "$out/starfishd" "$out/starfish-admin" "$staging/$controller/"
+    cp deploy/starfishd.service deploy/starfishd.tmpfiles deploy/roles.sql "$staging/$controller/"
+    cp scripts/install-controller.sh README.md "$staging/$controller/"
+
+    for dir in "$agent" "$controller"; do
+      ( cd "$staging" && zip -qr "$dir.zip" "$dir" && rm -rf "$dir" )
+      info "$staging/$dir.zip"
+    done
+  done
+
+# Upload the release archives to a draft GitHub release
+publish TAG='': (bundle TAG)
+  #!/usr/bin/env bash
+  # The release is left as a *draft*: the notes are written by hand on GitHub
+  # before it is published.
+  set -euo pipefail
+
+  info() { printf '\033[32m👉 \033[0m%s\n' "$*"; }
+  error() { printf '\033[31m💥 \033[0m%s\n' "$*" >&2; exit 1; }
+
+  command -v gh > /dev/null || error "the gh CLI is not installed"
+  gh auth status > /dev/null 2>&1 || error "gh is not logged in; run 'gh auth login'"
+
+  version=$(sed -n 's/^version = "\(.*\)"$/\1/p' starfishd/Cargo.toml | head -1)
+  tag='{{TAG}}'
+  [ -n "$tag" ] || tag="v$version"
+
+  git rev-parse -q --verify "refs/tags/$tag" > /dev/null \
+    || error "there is no $tag tag; run 'just release' first"
+
+  if gh release view "$tag" > /dev/null 2>&1; then
+    info "Updating the existing $tag release"
+  else
+    info "Creating the draft $tag release"
+    gh release create "$tag" --draft --title "$tag" \
+      --notes "Release notes to be written before publishing."
+  fi
+
+  gh release upload "$tag" scratch/publish/*.zip --clobber
+
+  info "Draft release ready. Add the notes and publish it:"
+  gh release view "$tag" --json url --jq .url
 
 # Delete the last tag (used for rolling back a release)
 del-last-tag:

@@ -26,6 +26,8 @@ just test-db                    # controller against PostgreSQL (see below)
 just test-ubuntu                # privileged helper against ubuntu:24.04 in Docker
 just test-systemd               # agent under systemd in a Lima VM
 just test-all
+just bundle                     # release archives into scratch/publish
+just publish                    # upload them to a draft GitHub release
 ```
 
 The three integration suites skip silently unless their environment variable is set
@@ -42,9 +44,10 @@ both a `gcc-*-linux-gnu` **and** its `libc6-dev-*-cross`, which is only *recomme
 the compiler and without which `ring` — the one crate here that compiles C — builds
 against the wrong `/usr/include`.
 
-Two Justfile recipes are stale and will fail: `gen-msg` / `gen-all` reference an
-`msgs/` directory and an `odin_ui/` subproject that do not exist, and `release` calls a
-`cov-json` recipe that is not defined.
+`just release` runs `test-all` and then cross compiles both Linux targets, so it needs
+Docker, a Lima VM and a local PostgreSQL all working. `just bundle` builds the archives
+from whatever is already in `target/<triple>/release` and uploads nothing; `just publish`
+sends them to a **draft** GitHub release whose notes are written by hand.
 
 ## Architecture
 
@@ -105,6 +108,34 @@ starfish_admin ──writes──> PostgreSQL <──reads── starfishd ─�
 - **The agent's systemd sandbox cannot be tightened.** `ProtectHome=yes`,
   `ProtectSystem=strict` and `NoNewPrivileges=yes` each silently break account management
   because the helper inherits the unit's namespace; `just test-systemd` pins them off.
+
+### Deployment
+
+`scripts/install-agent.sh` and `scripts/install-controller.sh` are the shipped installers,
+one per release archive, and both assume their binaries and deployment files sit beside
+them. They are convergent: every file is compared before it is written and the service is
+restarted only when something it reads changed, so a second run reports nothing changed.
+`just test-systemd` runs the *agent* installer rather than a copy of it, which is the only
+coverage either script has.
+
+- **The controller's socket is not where its default says.** `/run` is root-only, so
+  `starfishd.service` uses `RuntimeDirectory=starfishd` and the config points
+  `admin_socket` at `/run/starfishd/starfishd.sock`; `deploy/starfishd.tmpfiles` symlinks
+  `/run/starfishd.sock` to it so `starfish-admin` still works undecorated. `/run` is
+  emptied on boot, which is why that link is made by tmpfiles and not by the installer.
+- **`admin_socket_group` needs the controller in that group.** It hands the socket over
+  with `chown`, which the kernel permits only for a group the process belongs to, so the
+  installer writes a `SupplementaryGroups=` drop-in. Without it the controller starts,
+  fails on the socket, and restarts forever.
+- **The controller's unit is hardened where the agent's cannot be** — `ProtectSystem=strict`,
+  `NoNewPrivileges=yes` and an empty `CapabilityBoundingSet`. It never changes the host, so
+  none of the constraints described above for the agent apply to it.
+- **`deploy/roles.sql` is re-runnable and takes psql variables** (`db_name`,
+  `owner_password`, `controller_password`); an empty password leaves the role's existing one
+  alone. Roles are created inside `DO` blocks that check `pg_roles` first. It still has to
+  run *after* the schema exists, because `GRANT ... ON hosts` needs the table.
+- **`psql -c` does not interpolate `:variables`** — only file and stdin input does, which is
+  why the installer feeds its SQL in on stdin rather than with `-c`.
 
 ### Configuration
 

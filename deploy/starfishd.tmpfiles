@@ -1,0 +1,9 @@
+# Install as /etc/tmpfiles.d/starfishd.conf.
+#
+# The controller's admin socket lives in its RuntimeDirectory, because /run
+# itself is only writable by root and the controller is not.  `starfish-admin`
+# defaults to /run/starfishd.sock, so this points that at the real socket.
+#
+# /run is cleared on every boot, which is why the link is recreated here rather
+# than made once by the installer.
+L /run/starfishd.sock - - - - /run/starfishd/starfishd.sock
