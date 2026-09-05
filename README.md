@@ -252,6 +252,53 @@ silent fall back to an unencrypted listener. The certificate is loaded before th
 listener binds, so a bad one stops startup instead of failing on the first agent
 that connects. PKCS#8, PKCS#1 and SEC1 keys all work.
 
+The admin socket carries no TLS. It is a local Unix socket restricted by file
+permissions, so `starfish-admin` must run on the same machine as the controller.
+
+### Where to put them
+
+The controller only ever reads the pair, so keep both root owned and let the
+service account in by group, from a directory nothing else can enter:
+
+```sh
+install -d -o root -g starfishd -m 0750 /etc/starfish
+install -o root -g root      -m 0644 server.crt /etc/starfish/server.crt
+install -o root -g starfishd -m 0640 server.key /etc/starfish/server.key
+```
+
+The certificate chain is public, so `0644` on it saves trouble; the key is
+`0640` and the directory `0750`, which is what actually keeps it private. Root
+ownership means a compromised controller cannot rewrite either one.
+
+`/etc/ssl/certs` and `/etc/ssl/private` are the Debian convention and work just
+as well, but that key directory is `root:ssl-cert` mode `0710`, so the
+controller cannot traverse it without a `SupplementaryGroups=ssl-cert` drop-in
+— and that grants it every other key on the host. A directory of its own is
+tighter.
+
+Nothing may live under `/home`. `starfishd.service` sets `ProtectHome=yes`,
+which makes it unreadable whatever its mode says.
+
+`install-controller.sh` never copies the certificate or key. It checks that the
+service account can read both where they already are and writes those paths
+into the configuration, so a renewal reaches the controller without
+reinstalling. With certbot that means pointing `tls_cert` and `tls_key` at
+`/etc/letsencrypt/live/<name>/fullchain.pem` and `privkey.pem` directly. The
+`live` and `archive` directories are `0700 root:root`, though, so the
+controller cannot read through them until a deploy hook opens the path and
+restarts it:
+
+```sh
+# /etc/letsencrypt/renewal-hooks/deploy/starfishd.sh
+chgrp starfishd /etc/letsencrypt/live /etc/letsencrypt/archive
+chmod 0750 /etc/letsencrypt/live /etc/letsencrypt/archive
+chgrp starfishd /etc/letsencrypt/archive/<name>/privkey*.pem
+chmod 0640 /etc/letsencrypt/archive/<name>/privkey*.pem
+systemctl reload-or-restart starfishd
+```
+
+### Trusting the certificate
+
 Agents verify the controller against the **system trust store**. For a
 certificate signed by an internal CA, install the CA on each host the usual way:
 
@@ -261,9 +308,6 @@ update-ca-certificates
 ```
 
 `SSL_CERT_FILE` also works, which is handy for testing.
-
-The admin socket carries no TLS. It is a local Unix socket restricted by file
-permissions, so `starfish-admin` must run on the same machine as the controller.
 
 ## Privileges
 
