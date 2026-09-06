@@ -6,10 +6,13 @@ use url::Url;
 #[command(version, about = "Starfish administration tool")]
 pub struct AdminArgs {
     /// Address of the PostgreSQL server.  Can include a user name and password.
+    /// Also read from STARFISH_SQL_SERVER, which saves an administrator
+    /// retyping the socket URL that `peer` authentication needs.
     #[arg(
         long,
         short = 'p',
         global = true,
+        env = "STARFISH_SQL_SERVER",
         default_value = "postgresql://localhost:5432/starfish"
     )]
     pub postgres_server: Url,
