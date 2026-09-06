@@ -422,6 +422,13 @@ SQL
         cat "$SCRIPT_DIR/roles.sql"
     } | psql_super -d "$SQL_DATABASE" -f - > /dev/null
     same "roles and grants applied"
+
+    # Where an administrator's `peer` authenticated connection goes.  Debian and
+    # Ubuntu use /var/run/postgresql, but ask rather than assume.
+    if is_local "$SQL_HOST"; then
+        PG_SOCKET_DIR=$(psql_super -d "$SQL_DATABASE" -At \
+            -c 'SHOW unix_socket_directories' | cut -d, -f1 | tr -d '[:space:]')
+    fi
 fi
 
 # --- TLS --------------------------------------------------------------------
@@ -550,6 +557,33 @@ fi
 if [ -n "$ADMIN_GROUP" ]; then
     printf 'Add administrators to the %s group so they can run `starfish-admin refresh`:\n' "$ADMIN_GROUP"
     printf '    usermod -aG %s <user>\n' "$ADMIN_GROUP"
+fi
+
+# That group covers `refresh` and nothing else, because `refresh` is the one
+# command that talks to the controller instead of the database.  Everything else
+# needs a database login, which is a separate thing entirely.
+if [ "$SKIP_DATABASE" -eq 0 ]; then
+    printf '\nEvery other `starfish-admin` command needs a database login of its own, in the\n'
+    printf 'starfish_admins role, which holds the write grants on %s.  Give each\n' "$SQL_DATABASE"
+    printf 'administrator their own; a shared login makes any audit trail worthless:\n'
+
+    if is_local "$SQL_HOST"; then
+        printf "    sudo -u %s psql -d %s \\\\\n" "$SUPERUSER" "$SQL_DATABASE"
+        printf "        -c 'CREATE ROLE <user> LOGIN IN ROLE starfish_admins'\n"
+        printf 'Name the role after their Linux account and `peer` authentication over the\n'
+        printf 'socket recognises them, so there is no password to hand out at all:\n'
+        printf "    starfish-admin -p 'postgresql:///%s?host=%s' user list\n" \
+            "$SQL_DATABASE" "${PG_SOCKET_DIR:-/var/run/postgresql}"
+    else
+        printf "    psql -h %s -p %s -U %s -d %s \\\\\n" \
+            "$SQL_HOST" "$SQL_PORT" "$SUPERUSER" "$SQL_DATABASE"
+        printf "        -c \"CREATE ROLE <user> LOGIN IN ROLE starfish_admins PASSWORD '<password>'\"\n"
+        printf 'Each one needs their own password, in a file only they can read.  Never the\n'
+        printf 'service passwords in %s: starfish_owner can drop the tables.\n' "$ETC_DIR"
+        printf "    starfish-admin -p 'postgresql://<user>@%s:%s/%s%s' \\\\\n" \
+            "$SQL_HOST" "$SQL_PORT" "$SQL_DATABASE" "$SSL_MODE"
+        printf '        --password-file <file> user list\n'
+    fi
 fi
 
 printf 'Follow it with: journalctl -u starfishd -f\n'
