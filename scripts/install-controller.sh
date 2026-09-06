@@ -27,6 +27,8 @@ TMPFILES=/etc/tmpfiles.d/starfishd.conf
 SERVICE_USER=starfishd
 OWNER_PW_FILE="$ETC_DIR/owner.password"
 DB_PW_FILE="$ETC_DIR/db.password"
+ETC_TLS_CERT="$ETC_DIR/server.crt"
+ETC_TLS_KEY="$ETC_DIR/server.key"
 ADMIN_SOCKET=/run/starfishd/starfishd.sock
 
 SQL_HOST=""
@@ -54,6 +56,9 @@ Usage: install-controller.sh [options]
   --listen ADDR:PORT       address to serve agents on (default: 0.0.0.0:9600)
   --tls-cert PATH          PEM certificate chain, to serve wss://
   --tls-key PATH           PEM private key matching the certificate
+                           Both are left where they are, and only copied into
+                           /etc/starfish when the service account cannot read
+                           them there.
   --admin-socket-group G   group allowed to run `starfish-admin refresh`
                            (default: starfish-admins; "-" for none)
   --log-level LEVEL        error, warn, info, debug or trace (default: info)
@@ -111,6 +116,16 @@ install_file() {
         return 1
     fi
 
+    # A source that is already the destination -- a certificate handed to us
+    # at the very path we would copy it to, with the wrong owner or mode --
+    # only needs those fixed; `install` refuses to copy a file onto itself.
+    if [ "$src" -ef "$dest" ]; then
+        chown "$owner:$group" "$dest"
+        chmod "$mode" "$dest"
+        changed "$dest"
+        return 0
+    fi
+
     install -o "$owner" -g "$group" -m "$mode" -D "$src" "$dest"
     changed "$dest"
 }
@@ -140,6 +155,19 @@ prompt() {
 }
 
 gen_password() { openssl rand -base64 32 | tr -d '=+/' | cut -c1-32; }
+
+# Whether the controller could actually open a file at this path.  Being
+# readable by the service account is most of it, but the unit also sets
+# ProtectHome=yes, which hides /home from it however friendly the mode is.
+tls_reachable() {
+    local path=$1
+
+    case $path in
+        /home/*) return 1 ;;
+    esac
+
+    sudo -u "$SERVICE_USER" test -r "$path"
+}
 
 is_local() {
     case $1 in
@@ -386,20 +414,32 @@ fi
 
 # --- TLS --------------------------------------------------------------------
 
+tls_changed=0
+
 if [ -n "$TLS_CERT" ]; then
     info "TLS"
 
-    # Referenced where they are rather than copied, so a renewal by certbot or
-    # anything else reaches the controller without reinstalling.  They do have
-    # to be readable by the service account, and a key that is not is a startup
-    # failure worth catching now.
-    for path in "$TLS_CERT" "$TLS_KEY"; do
-        sudo -u "$SERVICE_USER" test -r "$path" \
-            || fail "$path is not readable by $SERVICE_USER (try: chgrp $SERVICE_USER $path && chmod 0640 $path)"
-    done
+    if tls_reachable "$TLS_CERT" && tls_reachable "$TLS_KEY"; then
+        # Referenced where they are, so a renewal by certbot or anything else
+        # reaches the controller without reinstalling.
+        same "$TLS_CERT"
+        same "$TLS_KEY"
+    else
+        note "$SERVICE_USER cannot read them where they are; copying into $ETC_DIR"
 
-    same "$TLS_CERT"
-    same "$TLS_KEY"
+        # Copied as a pair even when only one of the two is out of reach, so
+        # the certificate and the key it matches never end up in two places.
+        install_file "$TLS_CERT" "$ETC_TLS_CERT" 0644 root root \
+            && tls_changed=1 || true
+        install_file "$TLS_KEY" "$ETC_TLS_KEY" 0640 root "$SERVICE_USER" \
+            && tls_changed=1 || true
+
+        TLS_CERT="$ETC_TLS_CERT"
+        TLS_KEY="$ETC_TLS_KEY"
+
+        note "a renewed certificate needs this script run again, or the"
+        note "original made readable by $SERVICE_USER so it is used in place"
+    fi
 fi
 
 # --- configuration ----------------------------------------------------------
@@ -479,6 +519,7 @@ else
 fi
 
 if [ "$conf_changed" -eq 1 ] || [ "$unit_changed" -eq 1 ] \
+    || [ "$tls_changed" -eq 1 ] \
     || ! systemctl is-active --quiet starfishd; then
     systemctl restart starfishd
     changed "starfishd (re)started"
