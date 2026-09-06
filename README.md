@@ -46,7 +46,7 @@ sudo ./install-controller.sh
 
 The script will ask for the PostgreSQL server details, TLS certificate and key, create a database if it is missing, apply the database schema, apply the necessary database roles, create a service account `starfishd`, and start the controller under `systemd`.
 
-Passwords for the `starfish_owner` and `starfishd` roles will be automatically generated, and written to `/etc/starfish/owner.password` and `/etc/starfish/db.password` at mode `0600`. The script also asks about a TLS certificate (to enable secure WebSockets; a really good idea), and the group that may use the admin socket (optional, but `starfish` is recommended).
+Passwords for the `starfish_owner` and `starfishd` roles will be automatically generated, and written to `/etc/starfish/owner.password` and `/etc/starfish/db.password` at mode `0600`. The script also asks about a TLS certificate to enable secure WebSockets, and the access group for the admin socket (which is optional).
 
 Run `starfish-admin host add` to add a host.  Then install the agent on the host (you'll need the key the `add` operation printed).  Set `VERSION` and `TUPLE` as above (make sure they match):
 
@@ -69,16 +69,9 @@ You can supply flags to each of the scripts for unattended installs. `--help` li
 
 If you supply a PEM certificate chain and its private key the controller will serve `wss://` instead of `ws://`.  You have to supply both a key and a certificate chain. PKCS#8, PKCS#1 and SEC1 keys all work. You can use a privately generated certificate, or use something like [Certbot](https://certbot.eff.org/).
 
-You can install certificates with:
+Keys may not live under `/home` because `starfishd.service` sets `ProtectHome=yes`. `install-controller.sh` will copy the certificate and key to `/etc/starfish/server.crt` and `/etc/starfish/server.key`. So, to install an self generated certificate and key, copy them somewhere in your `HOME` directory before running the installer and supply them to the script, either on the command line or interactively.
 
-```sh
-sudo install -o root -g root -m 0644 server.crt /etc/starfish/server.crt
-sudo install -o root -g starfishd -m 0640 server.key /etc/starfish/server.key
-```
-
-Keys may not live under `/home` because `starfishd.service` sets `ProtectHome=yes`. `install-controller.sh` will copy the certificate and key to `/etc/starfish/server.crt` and `/etc/starfish/server.key`, and point the configuration there, if `starfishd` cannot read them where they are — a path under `/home` counts as unreadable however friendly its mode, and both files are copied even when only one is out of reach, so a certificate and its key never end up in two places. Otherwise, the script leaves the keys where they are so a renewal does not require re-running `install-controller.sh`.
-
-With certbot that means pointing the `tls_cert` and `tls_key` config settings at `/etc/letsencrypt/live/<name>/fullchain.pem` and `privkey.pem` directly. The `live` and `archive` directories are `0700 root:root`, so the controller cannot read through them until a deploy hook opens the path and restarts it. Here's an example:
+Otherwise, the script leaves the keys where they are so a renewal does not require re-running `install-controller.sh`. With certbot that means pointing the `tls_cert` and `tls_key` config settings at `/etc/letsencrypt/live/<name>/fullchain.pem` and `privkey.pem` directly. The `live` and `archive` directories are `0700 root:root`, so the controller cannot read through them until a deploy hook opens the path and restarts it. Here's an example:
 
 ```sh
 # /etc/letsencrypt/renewal-hooks/deploy/starfishd.sh
