@@ -405,10 +405,22 @@ SQL
     fi
 
     # Only now, with the tables in place, can the grants reach them.
-    psql_super -d "$SQL_DATABASE" -f "$SCRIPT_DIR/roles.sql" \
-        -v db_name="$SQL_DATABASE" \
-        -v owner_password="$OWNER_PASSWORD" \
-        -v controller_password="$DB_PASSWORD" > /dev/null
+    #
+    # Fed on standard input rather than with -f PATH, because psql runs here as
+    # the superuser account, which cannot necessarily read this script's own
+    # directory: a release unpacked in a home directory is 0750 on Ubuntu, and
+    # psql would fail with "Permission denied" on roles.sql.  Standard input is
+    # opened by this script, as root, before sudo drops to the other account.
+    #
+    # The variables are \set into that input rather than passed with -v for the
+    # same reason as above: the two passwords would otherwise be visible in `ps`.
+    esc() { printf '%s' "$1" | sed "s/[\\\\']/\\\\&/g"; }
+    {
+        printf "\\set db_name '%s'\n" "$(esc "$SQL_DATABASE")"
+        printf "\\set owner_password '%s'\n" "$(esc "$OWNER_PASSWORD")"
+        printf "\\set controller_password '%s'\n" "$(esc "$DB_PASSWORD")"
+        cat "$SCRIPT_DIR/roles.sql"
+    } | psql_super -d "$SQL_DATABASE" -f - > /dev/null
     same "roles and grants applied"
 fi
 
