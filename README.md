@@ -248,9 +248,26 @@ psql -d starfish -f deploy/roles.sql \
 
 Passing no password for a role leaves whatever it already has alone, which is what a peer authenticated deployment wants. Every statement in the file converges rather than failing on what already exists, so it can be re-run. `scripts/install-controller.sh` does all of the above.
 
+Each administrator then gets their own login role in the group, created by a superuser on the database host:
+
+```sh
+sudo -u postgres psql -d starfish \
+    -c 'CREATE ROLE jls LOGIN IN ROLE starfish_admins'
+```
+
+Name the role after their Linux account and `peer` authentication over the socket recognises them, so there is no password to distribute at all:
+
+```sh
+starfish-admin -p 'postgresql:///starfish?host=/var/run/postgresql' user list
+```
+
+The socket directory goes in the `host` query parameter; a percent encoded socket path where the host name belongs is *not* understood, and fails as a DNS lookup. Set `STARFISH_SQL_SERVER` to that URL rather than retyping it. Administrators working from another machine need a password each instead, as below. `install-controller.sh` prints whichever of the two matches the deployment it just configured.
+
+This has nothing to do with the Unix group behind `--admin-group`. That group governs only `starfish-admin refresh`, which is the one command that talks to the controller rather than the database.
+
 ### Passwords
 
-A password in the connection URL is visible in `ps` output to every user on the machine, and lands in shell history. Both tools take `--password-file` instead, which must be mode `0600` — a file anyone else can read is refused rather than quietly accepted. `starfish-admin` also reads `STARFISH_PASSWORD_FILE`.
+A password in the connection URL is visible in `ps` output to every user on the machine, and lands in shell history. Both tools take `--password-file` instead, which must be mode `0600` — a file anyone else can read is refused rather than quietly accepted. `starfish-admin` also reads `STARFISH_PASSWORD_FILE`, and takes the server URL from `STARFISH_SQL_SERVER`.
 
 ```sh
 install -m 0600 /dev/null /etc/starfish/db.password
