@@ -1,29 +1,42 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use url::Url;
+
+const GLOBAL_OPTIONS: &str = "Global Options";
 
 #[derive(Parser)]
 #[command(version, about = "Starfish administration tool")]
 pub struct AdminArgs {
-    /// Address of the PostgreSQL server.  Can include a user name and password.
-    /// Also read from STARFISH_SQL_SERVER, which saves an administrator
-    /// retyping the socket URL that `peer` authentication needs.
+    /// Address of the PostgreSQL server.  Can include a user name and
+    /// password. This is read from STARFISH_SQL_SERVER, which is helpful
+    /// when using `peer` authentication to save typing.
+    ///
     #[arg(
         long,
         short = 'p',
         global = true,
+        help_heading = GLOBAL_OPTIONS,
         env = "STARFISH_SQL_SERVER",
-        default_value = "postgresql://localhost:5432/starfish"
+        default_value = "postgresql://localhost:5432/starfish",
+        verbatim_doc_comment
     )]
     pub postgres_server: Url,
 
-    /// File holding the database password, mode 0600.  Keeps it out of `ps`
-    /// output and shell history.  Also read from STARFISH_PASSWORD_FILE.
-    #[arg(long, global = true, env = "STARFISH_PASSWORD_FILE")]
+    /// File holding the database password, mode 0600. Use this to keep
+    /// passwords out of `ps` output and shell history. This is also
+    /// read from the  STARFISH_PASSWORD_FILE environment variable.
+    ///
+    #[arg(
+        long,
+        global = true,
+        help_heading = GLOBAL_OPTIONS,
+        env = "STARFISH_PASSWORD_FILE",
+        verbatim_doc_comment
+    )]
     pub password_file: Option<PathBuf>,
 
     /// Unix domain socket the controller listens for commands on
-    #[arg(long, global = true, default_value = "/run/starfishd.sock")]
+    #[arg(long, global = true, help_heading = GLOBAL_OPTIONS, default_value = "/run/starfishd.sock")]
     pub socket: PathBuf,
 
     #[command(subcommand)]
@@ -45,12 +58,6 @@ pub enum Command {
     HostGroup {
         #[command(subcommand)]
         op: HostGroupOp,
-    },
-
-    /// Manage the Linux groups a host group's users can belong to
-    SecurityGroup {
-        #[command(subcommand)]
-        op: SecurityGroupOp,
     },
 
     /// Manage hosts
@@ -81,27 +88,19 @@ fn parse_ssh_key(s: &str) -> Result<(String, String), String> {
     Ok((name.to_string(), key.to_string()))
 }
 
-#[derive(Args)]
-pub struct UserRef {
-    /// The user's login name
-    #[arg(long, short)]
-    pub alias: String,
-}
-
 #[derive(Subcommand)]
 pub enum UserOp {
     /// Add a new user
     Add {
-        #[arg(long, short)]
         alias: String,
-        #[arg(long)]
+        #[arg(long, visible_alias = "fn")]
         first_name: String,
-        #[arg(long)]
+        #[arg(long, visible_alias = "ln")]
         last_name: String,
-        #[arg(long)]
+        #[arg(long, visible_alias = "em")]
         email: String,
         /// An SSH public key, as NAME:KEY.  May be repeated.
-        #[arg(long = "ssh-key", value_name = "NAME:KEY", value_parser = parse_ssh_key)]
+        #[arg(long = "ssh-key", visible_alias = "sk", value_name = "NAME:KEY", value_parser = parse_ssh_key)]
         ssh_keys: Vec<(String, String)>,
     },
 
@@ -112,33 +111,27 @@ pub enum UserOp {
     },
 
     /// Show one user, with their keys, groups and hosts
-    Show {
-        #[command(flatten)]
-        user: UserRef,
-    },
+    Show { alias: String },
 
     /// Change a user's details
     Update {
-        #[command(flatten)]
-        user: UserRef,
-        #[arg(long)]
+        alias: String,
+        #[arg(long, visible_alias = "na")]
+        new_alias: Option<String>,
+        #[arg(long, visible_alias = "fn")]
         first_name: Option<String>,
-        #[arg(long)]
+        #[arg(long, visible_alias = "ln")]
         last_name: Option<String>,
-        #[arg(long)]
+        #[arg(long, visible_alias = "em")]
         email: Option<String>,
     },
 
     /// Remove a user, along with their keys and memberships
-    Remove {
-        #[command(flatten)]
-        user: UserRef,
-    },
+    Remove { alias: String },
 
     /// Add an SSH public key to a user
     AddKey {
-        #[command(flatten)]
-        user: UserRef,
+        alias: String,
         /// A label for the key, so it can be told apart from the others
         #[arg(long)]
         name: String,
@@ -149,8 +142,7 @@ pub enum UserOp {
 
     /// Remove one of a user's SSH public keys
     RemoveKey {
-        #[command(flatten)]
-        user: UserRef,
+        alias: String,
         #[arg(long)]
         name: String,
     },
@@ -185,59 +177,14 @@ pub enum HostGroupOp {
         /// Grant the user sudo on the group's hosts
         #[arg(long)]
         sudoer: bool,
-        /// Mark the user as an administrator of the group
-        #[arg(long)]
-        admin: bool,
+        /// A Linux group to put the user in on the group's hosts.  May be
+        /// repeated.  Repeating the command replaces the whole set.
+        #[arg(long = "security-group", visible_alias = "sg", value_name = "NAME")]
+        security_groups: Vec<String>,
     },
 
     /// Take a user's accounts on the group's hosts away
     RemoveUser {
-        #[arg(long, short)]
-        name: String,
-        #[arg(long, short)]
-        alias: String,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum SecurityGroupOp {
-    /// Add a Linux group to a host group
-    Add {
-        #[arg(long)]
-        host_group: String,
-        #[arg(long, short)]
-        name: String,
-    },
-
-    /// List security groups
-    List {
-        /// Limit the listing to one host group
-        #[arg(long)]
-        host_group: Option<String>,
-    },
-
-    /// Remove a security group and everyone's membership of it
-    Remove {
-        #[arg(long)]
-        host_group: String,
-        #[arg(long, short)]
-        name: String,
-    },
-
-    /// Put a user in a security group
-    AddUser {
-        #[arg(long)]
-        host_group: String,
-        #[arg(long, short)]
-        name: String,
-        #[arg(long, short)]
-        alias: String,
-    },
-
-    /// Take a user out of a security group
-    RemoveUser {
-        #[arg(long)]
-        host_group: String,
         #[arg(long, short)]
         name: String,
         #[arg(long, short)]

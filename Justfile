@@ -61,7 +61,7 @@ test-ubuntu: docker-image
 test-systemd: docker-image
     ./scripts/test-systemd.sh
 
-# Release a new version
+# Release a new version and tag it
 release OPERATION='incrPatch':
   #!/usr/bin/env fish
   function info

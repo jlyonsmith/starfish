@@ -79,12 +79,11 @@ cargo build --quiet -p starfishd -p starfish_admin
 admin() { ./target/debug/starfish-admin -p "$DB_URL" "$@"; }
 
 admin init-db > /dev/null
-admin user add --alias ada --first-name Ada --last-name Lovelace \
+admin user add ada --first-name Ada --last-name Lovelace \
     --email ada@example.com --ssh-key "laptop:ssh-ed25519 AAAAC3-ada-laptop" > /dev/null
 admin host-group add --name web > /dev/null
-admin security-group add --host-group web --name developers > /dev/null
-admin host-group add-user --name web --alias ada --sudoer > /dev/null
-admin security-group add-user --host-group web --name developers --alias ada > /dev/null
+admin host-group add-user --name web --alias ada --sudoer \
+    --security-group developers > /dev/null
 
 # The VM knows itself by its Lima hostname, but the controller identifies hosts
 # by agent key, so the name here only has to be consistent.

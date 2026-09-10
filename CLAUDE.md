@@ -59,11 +59,15 @@ starfish_admin ──writes──> PostgreSQL <──reads── starfishd ─�
        └────── refresh, over a Unix socket ─────────┘                    (unprivileged)         (root)
 ```
 
-- **`starfish_db`** — Toasty models (`User`, `SshKey`, `HostGroup`, `Host`,
-  `SecurityGroup`, and the `HostGroupUser` / `UserSecurityGroup` join tables) plus the
+- **`starfish_db`** — Toasty models (`User`, `SshKey`, `HostGroup`, `Host` and the
+  `HostGroupUser` join table) plus the
   connection helpers in `connect.rs` (password files, URL redaction, `sslmode` warnings).
   The schema is *created*, not migrated: `push_schema` runs on first use and a model change
-  afterwards needs the tables updated by hand.
+  afterwards needs the tables updated by hand. Its **`tabled` feature is off by default**,
+  so `starfishd`, which prints no tables, never pulls `tabled` in; only `starfish_admin`
+  turns it on. Note that a `--workspace` build — which every `just build-` recipe is —
+  unifies features, so `tabled` is still compiled there and adds ~20KB to `starfishd`;
+  the isolation is exact only for `cargo build -p starfishd`.
 - **`starfish_msg`** — the wire protocol, shared by everything else. Encoded as MessagePack
   with `to_vec_named`, so **fields are matched by name and adding one does not break an
   older peer**. WebSockets frame messages themselves; the Unix socket does not, so
@@ -95,6 +99,13 @@ starfish_admin ──writes──> PostgreSQL <──reads── starfishd ─�
   deleted. Membership is removed only for groups the controller sent, plus `SUDO_GROUP` —
   that set is built in `sync::sync` and is the only revocation path. `authorized_keys` is
   owned outright and overwritten.
+- **Security groups have no table of their own.** They are a `text[]` column on
+  `host_group_users`, so a group exists exactly while somebody is in it, and the set a host
+  is sent is the union across the host group's members (`Controller::host_config`). The
+  cost is that emptying a group takes it out of the configuration rather than sending it
+  empty, and the previous invariant means the agent then never revokes it — the stale
+  membership stays on the host. Giving `host_groups` its own list of declared groups is the
+  fix if that ever matters; do not paper over it in the agent.
 - **Sudo is `starfish-sudo`, not Ubuntu's `sudo`** (`system::SUDO_GROUP`). Managed accounts
   are created with no password, so they could never satisfy the stock
   `%sudo ALL=(ALL:ALL) ALL` rule; `deploy/starfish-sudoers` gives `starfish-sudo` a

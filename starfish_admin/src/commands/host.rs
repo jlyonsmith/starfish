@@ -1,8 +1,9 @@
 use crate::admin_args::HostOp;
-use crate::commands::{find_host, find_host_group};
+use crate::commands::{find_host, find_host_group, table};
 use anyhow::{Context, bail};
 use starfish_db::{Host, HostGroup};
 use starfish_msg::AgentKey;
+use tabled::Tabled;
 use toasty::Db;
 
 pub async fn run(db: &mut Db, op: &HostOp) -> anyhow::Result<()> {
@@ -50,6 +51,18 @@ async fn add(db: &mut Db, hostname: &str, host_group: &str, info: &str) -> anyho
     Ok(())
 }
 
+/// A row of `host list --verbose`. `Host` derives `Tabled`, but this listing is
+/// not a host: it joins the group's name, derives health, and deliberately
+/// leaves out the agent key.
+#[derive(Tabled)]
+#[tabled(rename_all = "Upper Title Case")]
+struct HostRow {
+    hostname: String,
+    host_group: String,
+    health: &'static str,
+    info: String,
+}
+
 async fn list(db: &mut Db, verbose: bool) -> anyhow::Result<()> {
     let hosts = Host::all()
         .order_by(Host::fields().hostname().asc())
@@ -57,24 +70,30 @@ async fn list(db: &mut Db, verbose: bool) -> anyhow::Result<()> {
         .await
         .context("Unable to read hosts")?;
 
-    for host in hosts {
-        if !verbose {
+    if !verbose {
+        for host in hosts {
             println!("{}", host.hostname);
-            continue;
         }
 
+        return Ok(());
+    }
+
+    let mut rows = Vec::with_capacity(hosts.len());
+
+    for host in hosts {
         let group = HostGroup::get_by_id(db, host.host_group_id)
             .await
             .context("Unable to read the host's group")?;
 
-        println!(
-            "{}\t{}\t{}\t{}",
-            host.hostname,
-            group.name,
-            health(&host),
-            host.info
-        );
+        rows.push(HostRow {
+            health: health(&host),
+            hostname: host.hostname,
+            host_group: group.name,
+            info: host.info,
+        });
     }
+
+    println!("{}", table(rows));
 
     Ok(())
 }

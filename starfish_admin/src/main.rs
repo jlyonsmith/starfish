@@ -51,7 +51,6 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::User { op } => commands::user::run(&mut db, op).await?,
         Command::HostGroup { op } => commands::host_group::run(&mut db, op).await?,
-        Command::SecurityGroup { op } => commands::security_group::run(&mut db, op).await?,
         Command::Host { op } => commands::host::run(&mut db, op).await?,
         Command::Refresh { .. } => unreachable!("handled before connecting to the database"),
     }

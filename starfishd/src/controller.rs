@@ -1,10 +1,10 @@
 use crate::agent_registry::AgentRegistry;
 use anyhow::Context;
-use starfish_db::{Host, HostGroupUser, SecurityGroup, SshKey, User, UserSecurityGroup};
+use starfish_db::{Host, HostGroupUser, SshKey, User};
 use starfish_msg::{
     AdminResponse, ControllerMsg, Group, HostConfig, SshKey as MsgSshKey, UserAccount,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use toasty::Db;
 
@@ -58,36 +58,30 @@ impl Controller {
     /// Assembles the configuration for `host` from the database.
     ///
     /// A host's users and groups come from the host group it belongs to: every
-    /// [`SecurityGroup`] of that group is sent, along with every user in the
-    /// group and, for each, the subset of those groups they are a member of.
+    /// user in the group gets an account, and the groups sent are the union of
+    /// the security groups named on those users' memberships. A group nobody
+    /// is in therefore does not exist, and is not sent.
     pub async fn host_config(&self, host: &Host) -> anyhow::Result<HostConfig> {
         let mut db = self.db();
-
-        let security_groups = SecurityGroup::filter_by_host_group_id(host.host_group_id)
-            .exec(&mut db)
-            .await
-            .context("Unable to read security groups")?;
-
-        // Group names by id, so a user's memberships can be resolved without
-        // going back to the database for each one.
-        let group_names: HashMap<u64, &str> = security_groups
-            .iter()
-            .map(|group| (group.id, group.name.as_str()))
-            .collect();
-
-        let mut groups: Vec<Group> = security_groups
-            .iter()
-            .map(|group| Group {
-                name: group.name.clone(),
-            })
-            .collect();
-
-        groups.sort_by(|a, b| a.name.cmp(&b.name));
 
         let memberships = HostGroupUser::filter_by_host_group_id(host.host_group_id)
             .exec(&mut db)
             .await
             .context("Unable to read host group members")?;
+
+        // A `BTreeSet` both dedupes the union and leaves it sorted, which the
+        // configuration wants anyway.
+        let group_names: BTreeSet<&str> = memberships
+            .iter()
+            .flat_map(|m| m.security_groups.iter().map(String::as_str))
+            .collect();
+
+        let groups: Vec<Group> = group_names
+            .into_iter()
+            .map(|name| Group {
+                name: name.to_string(),
+            })
+            .collect();
 
         let user_ids: Vec<u64> = memberships.iter().map(|m| m.user_id).collect();
 
@@ -105,6 +99,11 @@ impl Controller {
             .map(|m| (m.user_id, m.is_sudoer))
             .collect();
 
+        let mut groups_by_user: HashMap<u64, Vec<String>> = memberships
+            .into_iter()
+            .map(|m| (m.user_id, m.security_groups))
+            .collect();
+
         let users = User::all()
             .filter(User::fields().id().in_list(user_ids.clone()))
             .exec(&mut db)
@@ -112,7 +111,7 @@ impl Controller {
             .context("Unable to read users")?;
 
         let ssh_keys = SshKey::all()
-            .filter(SshKey::fields().user_id().in_list(user_ids.clone()))
+            .filter(SshKey::fields().user_id().in_list(user_ids))
             .exec(&mut db)
             .await
             .context("Unable to read SSH keys")?;
@@ -127,27 +126,6 @@ impl Controller {
                     name: ssh_key.name,
                     key: ssh_key.key,
                 });
-        }
-
-        let user_groups = UserSecurityGroup::all()
-            .filter(UserSecurityGroup::fields().user_id().in_list(user_ids))
-            .exec(&mut db)
-            .await
-            .context("Unable to read user group memberships")?;
-
-        let mut groups_by_user: HashMap<u64, Vec<String>> = HashMap::new();
-
-        for user_group in user_groups {
-            // A user may be in groups belonging to other host groups. Only the
-            // ones this host is being sent are relevant.
-            let Some(name) = group_names.get(&user_group.security_group_id) else {
-                continue;
-            };
-
-            groups_by_user
-                .entry(user_group.user_id)
-                .or_default()
-                .push((*name).to_string());
         }
 
         let mut users: Vec<UserAccount> = users

@@ -3,11 +3,11 @@
 pub mod host;
 pub mod host_group;
 pub mod refresh;
-pub mod security_group;
 pub mod user;
 
 use anyhow::Context;
-use starfish_db::{Host, HostGroup, SecurityGroup, User};
+use starfish_db::{Host, HostGroup, User};
+use tabled::{Table, Tabled, settings::Style};
 use toasty::Db;
 
 /// Finds a user by login name.
@@ -40,22 +40,11 @@ pub async fn find_host(db: &mut Db, hostname: &str) -> anyhow::Result<Host> {
         .with_context(|| format!("There is no host named '{hostname}'"))
 }
 
-/// Finds a security group by name within a host group. Names are only unique
-/// inside a host group, so both are needed.
-pub async fn find_security_group(
-    db: &mut Db,
-    host_group: &HostGroup,
-    name: &str,
-) -> anyhow::Result<SecurityGroup> {
-    SecurityGroup::filter_by_host_group_id_and_name(host_group.id, name)
-        .first()
-        .exec(db)
-        .await
-        .context("Unable to look up the security group")?
-        .with_context(|| {
-            format!(
-                "Host group '{}' has no security group named '{name}'",
-                host_group.name
-            )
-        })
+/// Renders `rows` as the `list` commands' shared table: column titles over a
+/// rule, and no other decoration. Columns are sized to their contents.
+pub fn table<T: Tabled>(rows: impl IntoIterator<Item = T>) -> Table {
+    let mut table = Table::new(rows);
+
+    table.with(Style::psql());
+    table
 }

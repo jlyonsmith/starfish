@@ -1,7 +1,8 @@
-use crate::admin_args::{UserOp, UserRef};
-use crate::commands::find_user;
+use crate::admin_args::UserOp;
+use crate::commands::{find_user, table};
 use anyhow::{Context, bail};
-use starfish_db::{HostGroup, HostGroupUser, SecurityGroup, SshKey, User, UserSecurityGroup};
+use starfish_db::{HostGroup, HostGroupUser, SshKey, User};
+use tabled::settings::{Remove, location::ByColumnName};
 use toasty::Db;
 
 pub async fn run(db: &mut Db, op: &UserOp) -> anyhow::Result<()> {
@@ -14,16 +15,17 @@ pub async fn run(db: &mut Db, op: &UserOp) -> anyhow::Result<()> {
             ssh_keys,
         } => add(db, alias, first_name, last_name, email, ssh_keys).await,
         UserOp::List { verbose } => list(db, *verbose).await,
-        UserOp::Show { user } => show(db, user).await,
+        UserOp::Show { alias } => show(db, alias).await,
         UserOp::Update {
-            user,
+            alias,
+            new_alias,
             first_name,
             last_name,
             email,
-        } => update(db, user, first_name, last_name, email).await,
-        UserOp::Remove { user } => remove(db, user).await,
-        UserOp::AddKey { user, name, key } => add_key(db, user, name, key).await,
-        UserOp::RemoveKey { user, name } => remove_key(db, user, name).await,
+        } => update(db, alias, new_alias, first_name, last_name, email).await,
+        UserOp::Remove { alias } => remove(db, alias).await,
+        UserOp::AddKey { alias, name, key } => add_key(db, alias, name, key).await,
+        UserOp::RemoveKey { alias, name } => remove_key(db, alias, name).await,
     }
 }
 
@@ -64,22 +66,30 @@ async fn list(db: &mut Db, verbose: bool) -> anyhow::Result<()> {
         .await
         .context("Unable to read users")?;
 
-    for user in users {
-        if verbose {
-            println!(
-                "{}\t{} {}\t{}",
-                user.alias, user.first_name, user.last_name, user.email
-            );
-        } else {
+    if !verbose {
+        for user in users {
             println!("{}", user.alias);
         }
+
+        return Ok(());
     }
+
+    // `User` derives `Tabled` itself, so the listing is the model; it only
+    // drops the columns that mean nothing outside the database.
+    let mut table = table(users);
+
+    table
+        .with(Remove::column(ByColumnName::new("Id")))
+        .with(Remove::column(ByColumnName::new("Updated At")))
+        .with(Remove::column(ByColumnName::new("Created At")));
+
+    println!("{table}");
 
     Ok(())
 }
 
-async fn show(db: &mut Db, user_ref: &UserRef) -> anyhow::Result<()> {
-    let user = find_user(db, &user_ref.alias).await?;
+async fn show(db: &mut Db, alias: &str) -> anyhow::Result<()> {
+    let user = find_user(db, alias).await?;
 
     println!("alias:      {}", user.alias);
     println!("name:       {} {}", user.first_name, user.last_name);
@@ -114,10 +124,6 @@ async fn show(db: &mut Db, user_ref: &UserRef) -> anyhow::Result<()> {
             flags.push("sudo");
         }
 
-        if membership.is_admin {
-            flags.push("admin");
-        }
-
         println!(
             "  {}{}",
             group.name,
@@ -127,24 +133,15 @@ async fn show(db: &mut Db, user_ref: &UserRef) -> anyhow::Result<()> {
                 format!(" ({})", flags.join(", "))
             }
         );
-    }
 
-    let security_groups = UserSecurityGroup::filter_by_user_id(user.id)
-        .exec(db)
-        .await
-        .context("Unable to read the user's security groups")?;
-
-    println!("security groups:");
-
-    for membership in &security_groups {
-        let group = SecurityGroup::get_by_id(db, membership.security_group_id)
-            .await
-            .context("Unable to read a security group")?;
-        let host_group = HostGroup::get_by_id(db, group.host_group_id)
-            .await
-            .context("Unable to read a host group")?;
-
-        println!("  {}/{}", host_group.name, group.name);
+        // Security groups are per host group, so they belong under the group
+        // they apply to rather than in a list of their own.
+        if !membership.security_groups.is_empty() {
+            println!(
+                "    security groups: {}",
+                membership.security_groups.join(", ")
+            );
+        }
     }
 
     Ok(())
@@ -152,7 +149,8 @@ async fn show(db: &mut Db, user_ref: &UserRef) -> anyhow::Result<()> {
 
 async fn update(
     db: &mut Db,
-    user_ref: &UserRef,
+    alias: &str,
+    new_alias: &Option<String>,
     first_name: &Option<String>,
     last_name: &Option<String>,
     email: &Option<String>,
@@ -161,8 +159,12 @@ async fn update(
         bail!("Nothing to update; pass at least one of --first-name, --last-name or --email");
     }
 
-    let user = find_user(db, &user_ref.alias).await?;
+    let user = find_user(db, alias).await?;
     let mut update = User::update_by_id(user.id);
+
+    if let Some(new_alias) = new_alias {
+        update = update.alias(new_alias)
+    }
 
     if let Some(first_name) = first_name {
         update = update.first_name(first_name);
@@ -183,17 +185,14 @@ async fn update(
     Ok(())
 }
 
-async fn remove(db: &mut Db, user_ref: &UserRef) -> anyhow::Result<()> {
-    let user = find_user(db, &user_ref.alias).await?;
+async fn remove(db: &mut Db, alias: &str) -> anyhow::Result<()> {
+    let user = find_user(db, alias).await?;
 
     // Nothing in the schema cascades, so the rows that point at this user have
     // to go first or they would be left dangling.
     SshKey::delete_by_user_id(db, user.id)
         .await
         .context("Unable to remove the user's SSH keys")?;
-    UserSecurityGroup::delete_by_user_id(db, user.id)
-        .await
-        .context("Unable to remove the user's security group memberships")?;
     HostGroupUser::delete_by_user_id(db, user.id)
         .await
         .context("Unable to remove the user's host group memberships")?;
@@ -207,8 +206,8 @@ async fn remove(db: &mut Db, user_ref: &UserRef) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn add_key(db: &mut Db, user_ref: &UserRef, name: &str, key: &str) -> anyhow::Result<()> {
-    let user = find_user(db, &user_ref.alias).await?;
+async fn add_key(db: &mut Db, alias: &str, name: &str, key: &str) -> anyhow::Result<()> {
+    let user = find_user(db, alias).await?;
 
     let existing = SshKey::filter_by_user_id(user.id)
         .exec(db)
@@ -232,8 +231,8 @@ async fn add_key(db: &mut Db, user_ref: &UserRef, name: &str, key: &str) -> anyh
     Ok(())
 }
 
-async fn remove_key(db: &mut Db, user_ref: &UserRef, name: &str) -> anyhow::Result<()> {
-    let user = find_user(db, &user_ref.alias).await?;
+async fn remove_key(db: &mut Db, alias: &str, name: &str) -> anyhow::Result<()> {
+    let user = find_user(db, alias).await?;
 
     let keys = SshKey::filter_by_user_id(user.id)
         .exec(db)

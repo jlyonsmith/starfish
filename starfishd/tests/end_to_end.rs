@@ -10,7 +10,7 @@
 //! ```
 
 use futures_util::{SinkExt, StreamExt};
-use starfish_db::{Host, HostGroup, HostGroupUser, SecurityGroup, SshKey, User, UserSecurityGroup};
+use starfish_db::{Host, HostGroup, HostGroupUser, SshKey, User};
 use starfish_msg::{
     AdminRequest, AdminResponse, AgentKey, AgentMsg, ControllerMsg, ControllerMsg::HeartbeatAck,
     Heartbeat, Hello, HostConfig, ItemReport, ProtocolErrorKind, Status, SyncReport, frame,
@@ -236,19 +236,6 @@ async fn seed(database_url: &str) -> (AgentKey, toasty::Db) {
         .await
         .expect("unable to create the host group");
 
-    let mut security_groups = Vec::new();
-
-    for name in ["developers", "deploy"] {
-        security_groups.push(
-            SecurityGroup::create()
-                .host_group_id(group.id)
-                .name(name)
-                .exec(&mut db)
-                .await
-                .expect("unable to create a security group"),
-        );
-    }
-
     let jls = User::create()
         .alias("jls")
         .email("john@lyon-smith.org")
@@ -275,34 +262,26 @@ async fn seed(database_url: &str) -> (AgentKey, toasty::Db) {
         .await
         .expect("unable to create an SSH key");
 
-    for (user, is_sudoer) in [(&jls, true), (&ada, false)] {
+    // jls is in both groups, ada only in developers, so the test can tell that
+    // memberships are per user rather than per host group, and that the groups
+    // the host is sent are the union of the two.
+    for (user, is_sudoer, security_groups) in [
+        (
+            &jls,
+            true,
+            vec!["developers".to_string(), "deploy".to_string()],
+        ),
+        (&ada, false, vec!["developers".to_string()]),
+    ] {
         HostGroupUser::create()
             .host_group_id(group.id)
             .user_id(user.id)
-            .is_admin(false)
             .is_sudoer(is_sudoer)
+            .security_groups(security_groups)
             .exec(&mut db)
             .await
             .expect("unable to add a user to the host group");
     }
-
-    // jls is in both groups, ada only in developers, so the test can tell that
-    // memberships are per user rather than per host group.
-    for security_group in &security_groups {
-        UserSecurityGroup::create()
-            .user_id(jls.id)
-            .security_group_id(security_group.id)
-            .exec(&mut db)
-            .await
-            .expect("unable to add jls to a security group");
-    }
-
-    UserSecurityGroup::create()
-        .user_id(ada.id)
-        .security_group_id(security_groups[0].id)
-        .exec(&mut db)
-        .await
-        .expect("unable to add ada to a security group");
 
     let agent_key = AgentKey::generate().expect("unable to generate an agent key");
 

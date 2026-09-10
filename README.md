@@ -69,9 +69,9 @@ You can supply flags to each of the scripts for unattended installs. `--help` li
 
 If you supply a PEM certificate chain and its private key the controller will serve `wss://` instead of `ws://`.  You have to supply both a key and a certificate chain. PKCS#8, PKCS#1 and SEC1 keys all work. You can use a privately generated certificate, or use something like [Certbot](https://certbot.eff.org/).
 
-Keys may not live under `/home` because `starfishd.service` sets `ProtectHome=yes`. `install-controller.sh` will copy the certificate and key to `/etc/starfish/server.crt` and `/etc/starfish/server.key`. So, to install an self generated certificate and key, copy them somewhere in your `HOME` directory before running the installer and supply them to the script, either on the command line or interactively.
+Keys may not live under `/home` because `starfishd.service` sets `ProtectHome=yes`. So, to install a self generated certificate and key, copy them somewhere in your `HOME` directory before running the installer and supply them to the script on the command line or interactively. The `install-controller.sh` script will copy the certificate to `/etc/starfish/server.crt` and the key to `/etc/starfish/server.key`.
 
-Otherwise, the script leaves the keys where they are so a renewal does not require re-running `install-controller.sh`. With certbot that means pointing the `tls_cert` and `tls_key` config settings at `/etc/letsencrypt/live/<name>/fullchain.pem` and `privkey.pem` directly. The `live` and `archive` directories are `0700 root:root`, so the controller cannot read through them until a deploy hook opens the path and restarts it. Here's an example:
+Otherwise, the script leaves the keys where they are so a renewal does not require re-running `install-controller.sh`. With certbot that means pointing the `tls_cert` and `tls_key` config settings at `/etc/letsencrypt/live/<name>/fullchain.pem` and `privkey.pem` directly. The `live` and `archive` directories are `0700 root:root`, so the controller cannot read through them until a deploy hook opens the path and restarts it. Here's an example hook file:
 
 ```sh
 # /etc/letsencrypt/renewal-hooks/deploy/starfishd.sh
@@ -84,18 +84,11 @@ systemctl reload-or-restart starfishd
 
 ### TLS on the Agent
 
-Agents verify the controller against the **system trust store**. For a certificate signed by an internal CA, install the CA certificate on each host the usual way:
-
-```sh
-cp internal-ca.crt /usr/local/share/ca-certificates/
-update-ca-certificates
-```
-
-`SSL_CERT_FILE` also works, which is handy for testing.
+Agents verify the controller against the **system trust store**. For a certificate signed by an internal CA, you can upload the CA certificate to each host and give the location of the file when prompted, and the script will install it for you. You can ignore this for public certificates or if you already have the certificate installed.  `SSL_CERT_FILE`, but this is mostly just useful for testing.
 
 ### The Admin Tool
 
-Briefly, a **host group** ties people to machines. Every **host** belongs to one host group, and every **user** in that host group gets an account on every host in it. A host group also defines **security groups**, which are the Linux groups its users may belong to; each user is in whatever subset of them you choose. Users own any number of **SSH keys**, which the agent installs. Sudo is per user per host group, set with `--sudoer` on the command line and granted by membership of the `starfish-sudo` group; see [What the agent does to a host](#what-the-agent-does-to-a-host).
+Briefly, a **host group** ties people to machines. Every **host** belongs to one host group, and every **user** in that host group gets an account on every host in it. Adding a user to a host group also names the **security groups** they belong to on its hosts — ordinary Linux groups, given with `--security-group` and stored on the membership itself. Users own any number of **SSH keys**, which the agent installs. Sudo is per user per host group, set with `--sudoer` on the command line and granted by membership of the `starfish-sudo` group; see [What the agent does to a host](#what-the-agent-does-to-a-host).
 
 ```
 starfish-admin [-p <POSTGRES_SERVER>] [--socket <SOCKET>] <COMMAND>
@@ -103,7 +96,6 @@ starfish-admin [-p <POSTGRES_SERVER>] [--socket <SOCKET>] <COMMAND>
 init-db                   Create the database schema
 user                      add | list | show | update | remove | add-key | remove-key
 host-group                add | list | remove | add-user | remove-user
-security-group            add | list | remove | add-user | remove-user
 host                      add | list | show | update | remove | rekey
 refresh [--hostname]      Push configuration to agents now
 ```
@@ -111,7 +103,9 @@ refresh [--hostname]      Push configuration to agents now
 `refresh` only talks to the controller, so it needs no database connection.
 Everything else needs no controller.
 
-Nothing in the schema cascades, so the tool cleans up explicitly: removing a user also removes their SSH keys and memberships, and removing them from a host group also drops their security groups within it. Removing a host group that still has hosts is refused rather than orphaning them.
+`host-group add-user` is how a security group comes into being: a group exists on a host group's hosts because somebody is in it, and the set a host is sent is the union across the group's members. Re-running the command replaces that user's whole set, so it is also how one is taken away. Note that a group nobody is left in vanishes from the configuration rather than being sent as empty, and the agent only revokes membership of groups it is sent — so removing the last member of a group leaves that membership in place on the hosts.
+
+Nothing in the schema cascades, so the tool cleans up explicitly: removing a user also removes their SSH keys and memberships. Removing a host group that still has hosts is refused rather than orphaning them.
 
 ### General
 
@@ -348,13 +342,12 @@ starfish-admin init-db
 starfish-admin user add --alias ada --first-name Ada --last-name Lovelace \
     --email ada@example.com --ssh-key "laptop:ssh-ed25519 AAAAC3Nz..."
 
-# A group of machines, and the Linux groups its users may belong to
+# A group of machines
 starfish-admin host-group add --name web
-starfish-admin security-group add --host-group web --name developers
 
-# Who gets an account, and with what
-starfish-admin host-group add-user --name web --alias ada --sudoer
-starfish-admin security-group add-user --host-group web --name developers --alias ada
+# Who gets an account, with sudo and the Linux groups they belong to
+starfish-admin host-group add-user --name web --alias ada --sudoer \
+    --security-group developers
 
 # A machine.  This prints the key its agent authenticates with.
 starfish-admin host add --hostname web-1 --host-group web
