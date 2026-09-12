@@ -26,7 +26,7 @@ flowchart LR
 - **`starfish_msg`** holds the wire protocol shared by everything else: the controller/agent messages, the admin socket messages, and the `AgentKey` type. Messages are MessagePack, encoded by field name so adding a field does not break a peer built against an older version.
 - **`starfishd`** is the controller. It connects to PostgreSQL, serves agents over a WebSocket, and listens on a Unix domain socket for administrative nudges. When an agent connects it is sent the configuration for its host.
 - **`starfish_agent`** runs on each Ubuntu host as an unprivileged service account. It connects to the controller, sends a heartbeat on a timer, and hands each configuration to the helper below. It never talks to the database and never changes the host itself.
-- **`starfish_sync`** is the small privileged helper the agent invokes through `sudo`. It is the only part that needs root. See [Privileges](#privileges).
+- **`starfish_sync`** is the small privileged helper the agent invokes through `sudo`. It is the only part that runs as root
 - **`starfish_admin`** is the CLI. It reads and writes the database directly and contacts the controller only to trigger a refresh.
 
 ## Installing
@@ -59,7 +59,7 @@ sudo ./install-agent.sh
 
 This script will ask for the controller URL and the agent key, and install the service account, the privileged helper, the sudo rule and the unit. For a `wss://` controller using an internal CA, you'll be asked to install the CA's root certificate. Without the agent cannot connect to the controller.  Certbot installations don't need to do this.
 
-Both all install scripts are safe to run again. Everything is compared before it is written, so a second run on a correctly configured host reports that nothing changed and does not restart the service. 
+Both all install scripts are safe to run again. Everything is compared before it is written, so a second run on a correctly configured host reports that nothing changed and does not restart the service.
 
 You can supply flags to each of the scripts for unattended installs. `--help` lists them `--non-interactive` never prompts. Values already in the configuration file are used as defaults, so a re-run with no arguments repairs an installation without changing it.
 
@@ -90,7 +90,7 @@ Agents verify the controller against the **system trust store**. For a certifica
 
 Briefly, a **host group** ties people to machines. Every **host** belongs to one host group, and every **user** in that host group gets an account on every host in it. Adding a user to a host group also names the **security groups** they belong to on its hosts — ordinary Linux groups, given with `--security-group` and stored on the membership itself. Users own any number of **SSH keys**, which the agent installs. Sudo is per user per host group, set with `--sudoer` on the command line and granted by membership of the `starfish-sudo` group; see [What the agent does to a host](#what-the-agent-does-to-a-host).
 
-```
+```text
 starfish-admin [-p <POSTGRES_SERVER>] [--socket <SOCKET>] <COMMAND>
 
 init-db                   Create the database schema
@@ -170,7 +170,7 @@ The agent runs as an unprivileged `starfish` account. Everything that changes th
 
 The point of the split is the sudoers file, which is one line:
 
-```
+```text
 starfish ALL=(root) NOPASSWD: /usr/local/lib/starfish/starfish-sync
 ```
 
@@ -279,7 +279,7 @@ Better still, if the tool runs on the database host: a Unix socket with `peer` a
 
 `sslmode` defaults to `prefer`, which uses TLS when the server offers it but accepts plaintext and never checks who it is talking to. Ask for verification explicitly:
 
-```
+```url
 postgresql://starfishd@db.example.com/starfish?sslmode=verify-full&sslrootcert=system
 ```
 
@@ -312,7 +312,7 @@ Synchronizing is deliberately additive, with one exception. Worth knowing before
 
 Everything goes through standard Ubuntu tools: `useradd`, `usermod`, `groupadd`, `gpasswd`, `getent` and `id`. Group membership uses `gpasswd`, not `usermod --groups`, because the latter replaces a user's whole supplementary list and would silently drop unmanaged groups.
 
-These all run in `starfish-sync`, not in the agent; see [Privileges](#privileges).
+These all run in `starfish-sync`, not in the agent.
 
 Every group and user is attempted independently, and each is reported back as created, updated, unchanged or failed with a message. One broken account never blocks anybody else's access.
 
@@ -359,7 +359,7 @@ Now start the controller:
 starfishd --sql-server postgresql://localhost:5432/starfish
 ```
 
-Then set `web-1` up, using the key printed by `host add`. The agent runs as a service account rather than as root — see [Privileges](#privileges) for what this is doing:
+Then set `web-1` up, using the key printed by `host add`. The agent runs as a service account rather than as root.
 
 ```sh
 adduser --system --group --no-create-home --shell /usr/sbin/nologin starfish
@@ -413,7 +413,7 @@ Any Docker will do; it is developed against [colima](https://github.com/abiosoft
 
 **`test-systemd`** goes one step further, into a [Lima](https://lima-vm.io) VM running real Ubuntu with real systemd. It runs `scripts/install-agent.sh` — the same script the release archive ships, so the installer cannot drift from what it is meant to do — runs the controller on the Mac, and then checks that the unit starts, that the agent is unprivileged inside its sandbox, and that a real account appears in the VM. That last part exercises the whole chain at once: systemd sandbox, agent, sudo, helper, `useradd`.
 
-It also pins the three sandbox settings that must stay *off*. The helper is a child of the agent's unit and inherits its mount namespace, so `ProtectHome=yes`, `ProtectSystem=strict` and `NoNewPrivileges=yes` each look like an improvement and each silently break account management. See [Privileges](#privileges).
+It also pins the three sandbox settings that must stay *off*. The helper is a child of the agent's unit and inherits its mount namespace, so `ProtectHome=yes`, `ProtectSystem=strict` and `NoNewPrivileges=yes` each look like an improvement and each silently break account management.
 
 The VM is created on first use and left running afterwards; remove it with `limactl delete -f starfish-test`.
 

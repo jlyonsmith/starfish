@@ -11,6 +11,7 @@ pub use connect::{connection_url, redact, tls_warning};
 pub struct User {
     #[key]
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(skip))]
     pub id: u64,
 
     #[unique]
@@ -32,8 +33,10 @@ pub struct User {
     pub host_groups: toasty::Deferred<Vec<HostGroup>>,
 
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(display = "format_timestamp"))]
     pub updated_at: jiff::Timestamp,
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(display = "format_timestamp"))]
     pub created_at: jiff::Timestamp,
 }
 
@@ -44,6 +47,7 @@ pub struct User {
 pub struct SshKey {
     #[key]
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(skip))]
     pub id: u64,
 
     #[index]
@@ -56,8 +60,10 @@ pub struct SshKey {
     pub name: String,
 
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(display = "format_timestamp"))]
     pub updated_at: jiff::Timestamp,
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(display = "format_timestamp"))]
     pub created_at: jiff::Timestamp,
 }
 
@@ -68,6 +74,7 @@ pub struct SshKey {
 pub struct HostGroup {
     #[key]
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(skip))]
     pub id: u64,
 
     #[unique]
@@ -85,8 +92,10 @@ pub struct HostGroup {
     pub users: toasty::Deferred<Vec<User>>,
 
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(display = "format_timestamp"))]
     pub created_at: jiff::Timestamp,
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(display = "format_timestamp"))]
     pub updated_at: jiff::Timestamp,
 }
 
@@ -97,9 +106,11 @@ pub struct HostGroup {
 pub struct Host {
     #[key]
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(skip))]
     pub id: u64,
 
     #[index]
+    #[cfg_attr(feature = "tabled", tabled(skip))]
     pub host_group_id: u64,
     #[belongs_to]
     #[cfg_attr(feature = "tabled", tabled(skip))]
@@ -129,8 +140,10 @@ pub struct Host {
     pub next_heartbeat_at: Option<jiff::Timestamp>,
 
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(display = "format_timestamp"))]
     pub created_at: jiff::Timestamp,
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(display = "format_timestamp"))]
     pub updated_at: jiff::Timestamp,
 }
 
@@ -141,6 +154,7 @@ pub struct Host {
 #[key(host_group_id, user_id)]
 pub struct HostGroupUser {
     #[index]
+    #[cfg_attr(feature = "tabled", tabled(skip))]
     pub host_group_id: u64,
     #[belongs_to]
     #[cfg_attr(feature = "tabled", tabled(skip))]
@@ -158,18 +172,25 @@ pub struct HostGroupUser {
     /// `text[]`. A security group exists only by being named here, so the set
     /// a host is sent is the union of this column across the host group's
     /// members.
-    #[cfg_attr(feature = "tabled", tabled(display("display_names")))]
+    #[cfg_attr(feature = "tabled", tabled(display("format_groups")))]
     pub security_groups: Vec<String>,
 
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(display = "format_timestamp"))]
     pub created_at: jiff::Timestamp,
     #[auto]
+    #[cfg_attr(feature = "tabled", tabled(display = "format_timestamp"))]
     pub updated_at: jiff::Timestamp,
 }
 
 /// Renders a list of names for `tabled`, which needs something that implements
 /// `Display` and `Vec<String>` does not.
 #[cfg(feature = "tabled")]
-fn display_names(names: &[String]) -> String {
+pub fn format_groups(names: &[String]) -> String {
     names.join(", ")
+}
+
+#[cfg(feature = "tabled")]
+pub fn format_timestamp(t: &jiff::Timestamp) -> String {
+    t.to_string()
 }

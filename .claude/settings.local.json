@@ -8,7 +8,18 @@
       "Bash(cargo fmt *)",
       "Bash(cargo search *)",
       "Bash(cargo expand *)",
-      "Bash(pg_isready)"
+      "Bash(pg_isready)",
+      "Bash(just test-db *)",
+      "Bash(psql *)",
+      "Bash(fish /private/tmp/claude-501/-Users-john-Projects-jlyonsmith-starfish/a8c9ad45-7c37-4763-99c8-a37623bf9c0d/scratchpad/cli.fish 2>&1)",
+      "Bash(dropdb --if-exists starfish_cli_test)",
+      "Bash(limactl list *)",
+      "Bash(docker info *)",
+      "Bash(just test-systemd *)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ]
   }
 }

@@ -1,8 +1,9 @@
 use crate::admin_args::HostGroupOp;
-use crate::commands::{find_host_group, find_user, table};
+use crate::commands::{find_host_group, find_user, make_table};
 use anyhow::{Context, bail};
 use starfish_db::{Host, HostGroup, HostGroupUser};
 use std::collections::BTreeSet;
+use std::iter;
 use tabled::Tabled;
 use toasty::Db;
 
@@ -10,6 +11,7 @@ pub async fn run(db: &mut Db, op: &HostGroupOp) -> anyhow::Result<()> {
     match op {
         HostGroupOp::Add { name } => add(db, name).await,
         HostGroupOp::List { verbose } => list(db, *verbose).await,
+        HostGroupOp::Show { name } => show(db, name).await,
         HostGroupOp::Remove { name } => remove(db, name).await,
         HostGroupOp::AddUser {
             name,
@@ -28,7 +30,7 @@ async fn add(db: &mut Db, name: &str) -> anyhow::Result<()> {
         .await
         .context("Unable to add the host group")?;
 
-    println!("Added host group '{}' ({})", group.name, group.id);
+    println!("Added host group '{}'", group.name);
 
     Ok(())
 }
@@ -86,7 +88,51 @@ async fn list(db: &mut Db, verbose: bool) -> anyhow::Result<()> {
         });
     }
 
-    println!("{}", table(rows));
+    println!("{}", make_table(rows));
+
+    Ok(())
+}
+
+#[derive(Tabled)]
+#[tabled(rename_all = "Upper Title Case")]
+struct HostRow<'a> {
+    hostname: String,
+    info: String,
+    created_at: &'a jiff::Timestamp,
+    updated_at: &'a jiff::Timestamp,
+}
+
+async fn show(db: &mut Db, name: &str) -> anyhow::Result<()> {
+    let group = find_host_group(db, name).await?;
+    let hosts = Host::filter_by_host_group_id(group.id)
+        .exec(db)
+        .await
+        .context("Unable to read the group's hosts")?;
+    let users = HostGroupUser::filter_by_host_group_id(group.id)
+        .exec(db)
+        .await
+        .context("Unable to read the group's users")?;
+    let table = make_table(iter::once(HostGroupRow {
+        name: group.name.clone(),
+        hosts: hosts.len(),
+        users: users.len(),
+        security_groups: 0,
+    }));
+
+    println!("{table}\n");
+
+    let hosts = Host::filter_by_host_group_id(group.id)
+        .exec(db)
+        .await
+        .context("Unable to read the group's hosts")?;
+    let table = make_table(hosts.iter().map(|host| HostRow {
+        hostname: host.hostname.clone(),
+        info: host.info.clone(),
+        created_at: &host.created_at,
+        updated_at: &host.updated_at,
+    }));
+
+    println!("{table}");
 
     Ok(())
 }

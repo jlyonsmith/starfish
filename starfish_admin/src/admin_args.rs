@@ -7,9 +7,7 @@ const GLOBAL_OPTIONS: &str = "Global Options";
 #[derive(Parser)]
 #[command(version, about = "Starfish administration tool")]
 pub struct AdminArgs {
-    /// Address of the PostgreSQL server.  Can include a user name and
-    /// password. This is read from STARFISH_SQL_SERVER, which is helpful
-    /// when using `peer` authentication to save typing.
+    /// URL of the PostgreSQL server
     ///
     #[arg(
         long,
@@ -22,9 +20,7 @@ pub struct AdminArgs {
     )]
     pub postgres_server: Url,
 
-    /// File holding the database password, mode 0600. Use this to keep
-    /// passwords out of `ps` output and shell history. This is also
-    /// read from the  STARFISH_PASSWORD_FILE environment variable.
+    /// File holding the database password
     ///
     #[arg(
         long,
@@ -35,7 +31,7 @@ pub struct AdminArgs {
     )]
     pub password_file: Option<PathBuf>,
 
-    /// Unix domain socket the controller listens for commands on
+    /// Controller's Unix domain socket
     #[arg(long, global = true, help_heading = GLOBAL_OPTIONS, default_value = "/run/starfishd.sock")]
     pub socket: PathBuf,
 
@@ -151,10 +147,7 @@ pub enum UserOp {
 #[derive(Subcommand)]
 pub enum HostGroupOp {
     /// Add a new host group
-    Add {
-        #[arg(long, short)]
-        name: String,
-    },
+    Add { name: String },
 
     /// List all host groups
     List {
@@ -162,15 +155,14 @@ pub enum HostGroupOp {
         verbose: bool,
     },
 
+    /// Show information about a host group
+    Show { name: String },
+
     /// Remove an empty host group
-    Remove {
-        #[arg(long, short)]
-        name: String,
-    },
+    Remove { name: String },
 
     /// Give a user accounts on every host in the group
     AddUser {
-        #[arg(long, short)]
         name: String,
         #[arg(long, short)]
         alias: String,
@@ -179,13 +171,16 @@ pub enum HostGroupOp {
         sudoer: bool,
         /// A Linux group to put the user in on the group's hosts.  May be
         /// repeated.  Repeating the command replaces the whole set.
-        #[arg(long = "security-group", visible_alias = "sg", value_name = "NAME")]
+        #[arg(
+            long = "security-group",
+            visible_alias = "sg",
+            value_name = "SECURITY_GROUPS"
+        )]
         security_groups: Vec<String>,
     },
 
     /// Take a user's accounts on the group's hosts away
     RemoveUser {
-        #[arg(long, short)]
         name: String,
         #[arg(long, short)]
         alias: String,
@@ -196,12 +191,11 @@ pub enum HostGroupOp {
 pub enum HostOp {
     /// Add a host and generate the key its agent authenticates with
     Add {
-        #[arg(long)]
         hostname: String,
-        #[arg(long)]
+        #[arg(long, visible_alias = "hg", value_name = "GROUP")]
         host_group: String,
         /// Free text note about the host
-        #[arg(long, default_value = "")]
+        #[arg(long, visible_alias = "in", default_value = "")]
         info: String,
     },
 
@@ -212,14 +206,10 @@ pub enum HostOp {
     },
 
     /// Show one host, including its agent key
-    Show {
-        #[arg(long)]
-        hostname: String,
-    },
+    Show { hostname: String },
 
     /// Change a host's details
     Update {
-        #[arg(long)]
         hostname: String,
         #[arg(long)]
         info: Option<String>,
@@ -228,14 +218,8 @@ pub enum HostOp {
     },
 
     /// Remove a host
-    Remove {
-        #[arg(long)]
-        hostname: String,
-    },
+    Remove { hostname: String },
 
     /// Replace a host's agent key
-    Rekey {
-        #[arg(long)]
-        hostname: String,
-    },
+    Rekey { hostname: String },
 }

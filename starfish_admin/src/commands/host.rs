@@ -1,8 +1,9 @@
 use crate::admin_args::HostOp;
-use crate::commands::{find_host, find_host_group, table};
+use crate::commands::{find_host, find_host_group, make_table};
 use anyhow::{Context, bail};
-use starfish_db::{Host, HostGroup};
+use starfish_db::{Host, HostGroup, format_timestamp};
 use starfish_msg::AgentKey;
+use std::iter;
 use tabled::Tabled;
 use toasty::Db;
 
@@ -45,8 +46,9 @@ async fn add(db: &mut Db, hostname: &str, host_group: &str, info: &str) -> anyho
     println!();
     println!("Agent key: {agent_key}");
     println!();
-    println!("Put this in the host's /etc/starfish_agent.conf as `agent_key`.");
-    println!("It is shown again by `starfish-admin host show --hostname {hostname}`.");
+    println!(
+        "Put this in the host's /etc/starfish_agent.conf as `agent_key`. It is shown again by `starfish-admin host show {hostname}`."
+    );
 
     Ok(())
 }
@@ -59,7 +61,8 @@ async fn add(db: &mut Db, hostname: &str, host_group: &str, info: &str) -> anyho
 struct HostRow {
     hostname: String,
     host_group: String,
-    health: &'static str,
+    health: String,
+    contacted_at: String,
     info: String,
 }
 
@@ -86,14 +89,15 @@ async fn list(db: &mut Db, verbose: bool) -> anyhow::Result<()> {
             .context("Unable to read the host's group")?;
 
         rows.push(HostRow {
-            health: health(&host),
             hostname: host.hostname,
             host_group: group.name,
+            health: get_health(&host.next_heartbeat_at).to_string(),
+            contacted_at: get_contacted_at(&host.contacted_at).to_string(),
             info: host.info,
         });
     }
 
-    println!("{}", table(rows));
+    println!("{}", make_table(rows));
 
     Ok(())
 }
@@ -103,21 +107,15 @@ async fn show(db: &mut Db, hostname: &str) -> anyhow::Result<()> {
     let group = HostGroup::get_by_id(db, host.host_group_id)
         .await
         .context("Unable to read the host's group")?;
+    let table = make_table(iter::once(HostRow {
+        hostname: host.hostname,
+        host_group: group.name,
+        health: get_health(&host.next_heartbeat_at).to_string(),
+        contacted_at: get_contacted_at(&host.contacted_at).to_string(),
+        info: host.info,
+    }));
 
-    println!("hostname:   {}", host.hostname);
-    println!("host group: {}", group.name);
-    println!("info:       {}", host.info);
-    println!("agent key:  {}", host.agent_key);
-    println!("health:     {}", health(&host));
-
-    match host.contacted_at {
-        Some(contacted_at) => println!("last seen:  {contacted_at}"),
-        None => println!("last seen:  never"),
-    }
-
-    if let Some(next_heartbeat_at) = host.next_heartbeat_at {
-        println!("due by:     {next_heartbeat_at}");
-    }
+    println!("{table}");
 
     Ok(())
 }
@@ -183,14 +181,22 @@ async fn rekey(db: &mut Db, hostname: &str) -> anyhow::Result<()> {
 }
 
 /// Whether the host's agent has checked in when it said it would.
-fn health(host: &Host) -> &'static str {
-    let Some(next_heartbeat_at) = host.next_heartbeat_at else {
-        return "never seen";
+fn get_health(next_heartbeat_at: &Option<jiff::Timestamp>) -> String {
+    let Some(next_heartbeat_at) = next_heartbeat_at else {
+        return "Unknown".to_string();
     };
 
-    if next_heartbeat_at < jiff::Timestamp::now() {
-        "overdue"
+    if *next_heartbeat_at < jiff::Timestamp::now() {
+        "Overdue".to_string()
     } else {
-        "ok"
+        "OK".to_string()
+    }
+}
+
+fn get_contacted_at(contacted_at: &Option<jiff::Timestamp>) -> String {
+    if let Some(contacted_at) = contacted_at {
+        format_timestamp(contacted_at)
+    } else {
+        "Never".to_string()
     }
 }

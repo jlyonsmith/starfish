@@ -1,8 +1,8 @@
 use crate::admin_args::UserOp;
-use crate::commands::{find_user, table};
+use crate::commands::{find_user, make_table};
 use anyhow::{Context, bail};
 use starfish_db::{HostGroup, HostGroupUser, SshKey, User};
-use tabled::settings::{Remove, location::ByColumnName};
+use std::iter;
 use toasty::Db;
 
 pub async fn run(db: &mut Db, op: &UserOp) -> anyhow::Result<()> {
@@ -24,8 +24,8 @@ pub async fn run(db: &mut Db, op: &UserOp) -> anyhow::Result<()> {
             email,
         } => update(db, alias, new_alias, first_name, last_name, email).await,
         UserOp::Remove { alias } => remove(db, alias).await,
-        UserOp::AddKey { alias, name, key } => add_key(db, alias, name, key).await,
-        UserOp::RemoveKey { alias, name } => remove_key(db, alias, name).await,
+        UserOp::AddKey { alias, name, key } => add_ssh_key(db, alias, name, key).await,
+        UserOp::RemoveKey { alias, name } => remove_ssh_key(db, alias, name).await,
     }
 }
 
@@ -74,75 +74,58 @@ async fn list(db: &mut Db, verbose: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // `User` derives `Tabled` itself, so the listing is the model; it only
-    // drops the columns that mean nothing outside the database.
-    let mut table = table(users);
-
-    table
-        .with(Remove::column(ByColumnName::new("Id")))
-        .with(Remove::column(ByColumnName::new("Updated At")))
-        .with(Remove::column(ByColumnName::new("Created At")));
+    let table = make_table(users);
 
     println!("{table}");
 
     Ok(())
 }
 
+#[derive(tabled::Tabled)]
+#[tabled(rename_all = "Upper Title Case")]
+struct UserHostGroupRow<'a> {
+    host_group: String,
+    sudoer: &'a str,
+    created_at: &'a jiff::Timestamp,
+    updated_at: &'a jiff::Timestamp,
+}
+
 async fn show(db: &mut Db, alias: &str) -> anyhow::Result<()> {
     let user = find_user(db, alias).await?;
+    let id = user.id;
+    let table = make_table(iter::once(user));
 
-    println!("alias:      {}", user.alias);
-    println!("name:       {} {}", user.first_name, user.last_name);
-    println!("email:      {}", user.email);
+    println!("{table}\n");
 
-    let keys = SshKey::filter_by_user_id(user.id)
+    let keys = SshKey::filter_by_user_id(id)
         .exec(db)
         .await
         .context("Unable to read the user's SSH keys")?;
 
-    println!("ssh keys:   {}", keys.len());
+    let table = make_table(keys);
 
-    for key in &keys {
-        println!("  {}\t{}", key.name, key.key);
-    }
+    println!("{table}\n");
 
-    let memberships = HostGroupUser::filter_by_user_id(user.id)
+    let memberships = HostGroupUser::filter_by_user_id(id)
         .exec(db)
         .await
         .context("Unable to read the user's host groups")?;
+    let mut rows = Vec::<UserHostGroupRow>::new();
 
-    println!("host groups:");
-
-    for membership in &memberships {
-        let group = HostGroup::get_by_id(db, membership.host_group_id)
+    for host_group in &memberships {
+        let group = HostGroup::get_by_id(db, host_group.host_group_id)
             .await
             .context("Unable to read a host group")?;
 
-        let mut flags = Vec::new();
-
-        if membership.is_sudoer {
-            flags.push("sudo");
-        }
-
-        println!(
-            "  {}{}",
-            group.name,
-            if flags.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", flags.join(", "))
-            }
-        );
-
-        // Security groups are per host group, so they belong under the group
-        // they apply to rather than in a list of their own.
-        if !membership.security_groups.is_empty() {
-            println!(
-                "    security groups: {}",
-                membership.security_groups.join(", ")
-            );
-        }
+        rows.push(UserHostGroupRow {
+            host_group: group.name.clone(),
+            sudoer: if host_group.is_sudoer { "Yes" } else { "No" },
+            created_at: &host_group.created_at,
+            updated_at: &host_group.updated_at,
+        });
     }
+
+    println!("{}", make_table(rows));
 
     Ok(())
 }
@@ -206,7 +189,7 @@ async fn remove(db: &mut Db, alias: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn add_key(db: &mut Db, alias: &str, name: &str, key: &str) -> anyhow::Result<()> {
+async fn add_ssh_key(db: &mut Db, alias: &str, name: &str, key: &str) -> anyhow::Result<()> {
     let user = find_user(db, alias).await?;
 
     let existing = SshKey::filter_by_user_id(user.id)
@@ -231,7 +214,7 @@ async fn add_key(db: &mut Db, alias: &str, name: &str, key: &str) -> anyhow::Res
     Ok(())
 }
 
-async fn remove_key(db: &mut Db, alias: &str, name: &str) -> anyhow::Result<()> {
+async fn remove_ssh_key(db: &mut Db, alias: &str, name: &str) -> anyhow::Result<()> {
     let user = find_user(db, alias).await?;
 
     let keys = SshKey::filter_by_user_id(user.id)

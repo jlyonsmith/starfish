@@ -42,7 +42,7 @@ pub async fn find_host(db: &mut Db, hostname: &str) -> anyhow::Result<Host> {
 
 /// Renders `rows` as the `list` commands' shared table: column titles over a
 /// rule, and no other decoration. Columns are sized to their contents.
-pub fn table<T: Tabled>(rows: impl IntoIterator<Item = T>) -> Table {
+pub fn make_table<T: Tabled>(rows: impl IntoIterator<Item = T>) -> Table {
     let mut table = Table::new(rows);
 
     table.with(Style::psql());
