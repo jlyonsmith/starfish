@@ -74,15 +74,20 @@ pub struct HostConfig {
     /// twice carries two different generations.
     pub generation: u64,
 
-    /// Every group the host should have. A user's `groups` may only name
-    /// groups from this list.
+    /// Every group this host's users are placed in. A user's `groups` may
+    /// only name groups from this list. Starfish does not create them; they
+    /// are expected to exist on the host already.
     pub groups: Vec<Group>,
 
     /// Every user the host should have.
     pub users: Vec<UserAccount>,
 }
 
-/// A group the agent should create on the host.
+/// A group the host is expected to have.
+///
+/// Groups are administered outside Starfish: the agent never creates or
+/// deletes one, it only puts users in and takes them out. A group named here
+/// that the host does not have is reported as [`Status::Missing`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Group {
     pub name: String,
@@ -146,11 +151,20 @@ pub enum Status {
     /// The host already matched the configuration.
     Unchanged,
 
-    /// The group or user did not exist and was added.
+    /// The user did not exist and was added. Groups are never created, so this
+    /// never appears for one.
     Created,
 
     /// The group or user existed but had to be changed.
     Updated,
+
+    /// The group does not exist on the host, so nobody could be put in it.
+    ///
+    /// Not a failure: groups are administered outside Starfish, and the host
+    /// is free not to have one. It is worth an administrator's attention
+    /// though, because everybody the configuration puts in that group is
+    /// going without the access it was meant to give them.
+    Missing,
 
     /// The update failed and the host does not match the configuration.
     Failed { message: String },

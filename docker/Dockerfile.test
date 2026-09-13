@@ -35,11 +35,16 @@ COPY --from=build /out/starfish-agent /usr/local/bin/starfish-agent
 
 # Exactly the deployment described in the README: an unprivileged service
 # account whose only privilege is one sudo rule naming one argument-less
-# command.
+# command, plus the group that rule grants NOPASSWD to.
 COPY deploy/starfish-sync.sudoers /etc/sudoers.d/starfish
 COPY deploy/starfish-sudoers /etc/sudoers.d/starfish-sudo
 
+# `starfish-sudo` is created here for the same reason: a sync never creates a
+# group, so on a real host scripts/install-agent.sh makes this one, and the
+# container has to stand in for it.  The security groups the tests use are
+# created by the tests themselves, which is the point they are making.
 RUN useradd --system --no-create-home --shell /usr/sbin/nologin starfish \
+    && groupadd --system starfish-sudo \
     && chown root:root /etc/sudoers.d/starfish /etc/sudoers.d/starfish-sudo \
     && chmod 0440 /etc/sudoers.d/starfish /etc/sudoers.d/starfish-sudo \
     && visudo -c -f /etc/sudoers.d/starfish \

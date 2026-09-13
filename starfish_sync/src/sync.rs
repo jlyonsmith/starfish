@@ -1,9 +1,16 @@
 //! Bringing the host in line with the configuration the controller sent.
 //!
-//! Synchronizing is additive by design: users and groups that are missing get
-//! created, but nothing the controller did not mention is ever removed. The one
-//! thing that is taken away is membership of a group the controller *did* send,
-//! because that is the only way to revoke access.
+//! Synchronizing is additive by design: users that are missing get created, but
+//! nothing the controller did not mention is ever removed. The one thing that
+//! is taken away is membership of a group the controller *did* send, because
+//! that is the only way to revoke access.
+//!
+//! Groups themselves are not Starfish's to manage. They are expected to exist
+//! on the host already, put there by whatever administers the host's groups,
+//! and Starfish only ever moves users in and out of them. A group in the
+//! configuration that the host does not have is reported as
+//! [`Status::Missing`] and warned about, never created — and so is
+//! [`SUDO_GROUP`], which `scripts/install-agent.sh` creates at install time.
 
 use crate::system::{LEGACY_SUDO_GROUP, SUDO_GROUP, System};
 use crate::validate;
@@ -20,24 +27,32 @@ const AUTHORIZED_KEYS_HEADER: &str =
 /// One failure does not stop the rest: every item is attempted and reported on
 /// its own, so a single broken account cannot hold up everybody else's access.
 pub fn sync(system: &dyn System, config: &HostConfig) -> SyncReport {
-    // The sudo group is created here rather than being sent by the controller,
+    // The sudo group is checked here rather than being sent by the controller,
     // which knows nothing about it: it is not a security group anybody
-    // configures, but it has to exist before a sudoer can be put in it.  Only
-    // when somebody actually needs it, so a host with no sudoers does not grow
-    // a group it will never use.
+    // configures, but a sudoer cannot be put in it unless it exists.  Only
+    // looked for when somebody actually needs it, so a host with no sudoers is
+    // not warned about a group it will never use.
     let mut names: Vec<String> = config.groups.iter().map(|g| g.name.clone()).collect();
 
     if config.users.iter().any(|user| user.is_sudoer) && !names.iter().any(|n| n == SUDO_GROUP) {
         names.push(SUDO_GROUP.to_string());
     }
 
-    let groups = names
-        .into_iter()
-        .map(|name| ItemReport {
-            status: into_status(sync_group(system, &name)),
-            name,
-        })
-        .collect();
+    // Which of those groups the host actually has.  Nothing is created: the
+    // set is worked out once here and then used to decide which memberships
+    // can be granted at all.
+    let mut present: BTreeSet<String> = BTreeSet::new();
+    let mut groups = Vec::with_capacity(names.len());
+
+    for name in names {
+        let status = into_status(check_group(system, &name));
+
+        if status == Status::Unchanged {
+            present.insert(name.clone());
+        }
+
+        groups.push(ItemReport { name, status });
+    }
 
     // Membership is only ever added or removed within this set, so groups the
     // controller knows nothing about are left alone. `sudo` is in it because
@@ -61,7 +76,7 @@ pub fn sync(system: &dyn System, config: &HostConfig) -> SyncReport {
         .iter()
         .map(|user| ItemReport {
             name: user.name.clone(),
-            status: into_status(sync_user(system, user, &managed)),
+            status: into_status(sync_user(system, user, &managed, &present)),
         })
         .collect();
 
@@ -73,22 +88,30 @@ pub fn sync(system: &dyn System, config: &HostConfig) -> SyncReport {
     }
 }
 
-fn sync_group(system: &dyn System, group: &str) -> anyhow::Result<Status> {
+/// Looks for a group, without creating it.
+///
+/// Groups belong to whoever administers the host, so a missing one is reported
+/// and warned about rather than made.
+fn check_group(system: &dyn System, group: &str) -> anyhow::Result<Status> {
     validate::name("Group", group)?;
 
     if system.group_exists(group)? {
         return Ok(Status::Unchanged);
     }
 
-    system.create_group(group)?;
+    warn(&format!(
+        "Group '{group}' does not exist on this host. Starfish does not create \
+         groups, so nobody will be put in it."
+    ));
 
-    Ok(Status::Created)
+    Ok(Status::Missing)
 }
 
 fn sync_user(
     system: &dyn System,
     user: &UserAccount,
     managed: &BTreeSet<&str>,
+    present: &BTreeSet<String>,
 ) -> anyhow::Result<Status> {
     validate::name("User", &user.name)?;
     validate::full_name(&user.full_name)?;
@@ -120,7 +143,7 @@ fn sync_user(
         changed = true;
     }
 
-    changed |= sync_groups(system, user, managed)?;
+    changed |= sync_groups(system, user, managed, present)?;
     changed |= sync_authorized_keys(system, user)?;
 
     Ok(if created {
@@ -134,10 +157,17 @@ fn sync_user(
 
 /// Adds the user to the groups they should be in and removes them from managed
 /// groups they should not. Returns whether anything changed.
+///
+/// `present` is the subset of the configuration's groups the host actually has.
+/// A group outside it is skipped rather than attempted: `gpasswd` would fail,
+/// and a group the host does not have is not this user's fault, so it must not
+/// turn their whole account into a failure. It is warned about per user, which
+/// is what says *who* is going without the access.
 fn sync_groups(
     system: &dyn System,
     user: &UserAccount,
     managed: &BTreeSet<&str>,
+    present: &BTreeSet<String>,
 ) -> anyhow::Result<bool> {
     let mut wanted: BTreeSet<&str> = user.groups.iter().map(String::as_str).collect();
 
@@ -149,6 +179,22 @@ fn sync_groups(
     let mut changed = false;
 
     for group in &wanted {
+        if !present.contains(*group) {
+            warn(&format!(
+                "User '{}' should be in group '{group}', which does not exist on \
+                 this host. {}",
+                user.name,
+                if *group == SUDO_GROUP {
+                    "They are not getting sudo. Reinstall the agent, or create \
+                     the group by hand, to restore it."
+                } else {
+                    "They are not getting whatever access it grants."
+                }
+            ));
+
+            continue;
+        }
+
         if !current.contains(*group) {
             system.add_to_group(&user.name, group)?;
             changed = true;
@@ -192,6 +238,15 @@ fn authorized_keys(user: &UserAccount) -> String {
     }
 
     contents
+}
+
+/// Writes a warning for the agent to pick up.
+///
+/// The helper's standard output carries the report, so this goes to standard
+/// error, which the agent captures and logs. Anything an administrator ought
+/// to see from the controller instead belongs in the report as a [`Status`].
+fn warn(message: &str) {
+    eprintln!("warning: {message}");
 }
 
 /// Turns a failed operation into a status the controller can report, keeping
@@ -260,6 +315,19 @@ pub(crate) mod tests {
             self
         }
 
+        /// Deletes a group the way `groupdel` does, taking its memberships
+        /// with it: a supplementary membership lives in the group's own entry,
+        /// so removing the group removes everybody from it.
+        fn remove_group(&self, group: &str) {
+            let mut state = self.state.lock().unwrap();
+
+            state.groups.remove(group);
+
+            for user in state.users.values_mut() {
+                user.groups.remove(group);
+            }
+        }
+
         fn failing(self, action: &str, message: &str) -> Self {
             self.state
                 .lock()
@@ -294,13 +362,6 @@ pub(crate) mod tests {
     impl System for FakeSystem {
         fn group_exists(&self, group: &str) -> anyhow::Result<bool> {
             Ok(self.state.lock().unwrap().groups.contains(group))
-        }
-
-        fn create_group(&self, group: &str) -> anyhow::Result<()> {
-            self.record(format!("create_group {group}"))?;
-            self.state.lock().unwrap().groups.insert(group.to_string());
-
-            Ok(())
         }
 
         fn user_id(&self, user: &str) -> anyhow::Result<Option<u32>> {
@@ -433,19 +494,19 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn creates_missing_groups_and_users() {
-        let system = FakeSystem::default();
+    fn creates_missing_users_and_joins_them_to_existing_groups() {
+        let system = FakeSystem::default().with_group("developers");
         let report = sync(
             &system,
             &config(&["developers"], vec![user("ada", &["developers"], false)]),
         );
 
-        assert_eq!(status(&report, "developers"), Status::Created);
+        // The group was already there, and is never something a sync makes.
+        assert_eq!(status(&report, "developers"), Status::Unchanged);
         assert_eq!(status(&report, "ada"), Status::Created);
         assert_eq!(
             system.actions(),
             vec![
-                "create_group developers",
                 "create_user ada",
                 "add_to_group ada developers",
                 "set_authorized_keys ada",
@@ -454,11 +515,56 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn never_creates_a_group_the_host_does_not_have() {
+        let system = FakeSystem::default();
+        let report = sync(
+            &system,
+            &config(&["developers"], vec![user("ada", &["developers"], false)]),
+        );
+
+        // Reported, not failed: the host is entitled not to have the group,
+        // and the user is still created and given their keys.
+        assert_eq!(status(&report, "developers"), Status::Missing);
+        assert_eq!(status(&report, "ada"), Status::Created);
+        assert_eq!(
+            system.actions(),
+            vec!["create_user ada", "set_authorized_keys ada"]
+        );
+    }
+
+    #[test]
+    fn reports_a_group_deleted_from_the_host_while_users_were_still_in_it() {
+        // The first sync is an ordinary one, with the group in place.
+        let system = FakeSystem::default().with_group("developers");
+        let config = config(&["developers"], vec![user("ada", &["developers"], false)]);
+
+        assert_eq!(status(&sync(&system, &config), "ada"), Status::Created);
+        assert!(system.user("ada").groups.contains("developers"));
+
+        // Then somebody deletes the group on the host, which takes its
+        // memberships with it.  Starfish does not put it back.
+        system.remove_group("developers");
+
+        let before = system.actions().len();
+        let report = sync(&system, &config);
+
+        assert_eq!(status(&report, "developers"), Status::Missing);
+        assert_eq!(
+            &system.actions()[before..],
+            &[] as &[String],
+            "the host was changed over a group it no longer has"
+        );
+        // Nothing else about ada is disturbed by the group going away.
+        assert_eq!(status(&report, "ada"), Status::Unchanged);
+    }
+
+    #[test]
     fn moves_a_sudoer_off_the_group_an_older_agent_used() {
         // A host configured before starfish-sudo existed: ada is a sudoer, and
         // her grant is membership of Ubuntu's own `sudo`.
         let system = FakeSystem::default()
             .with_group(LEGACY_SUDO_GROUP)
+            .with_group(SUDO_GROUP)
             .with_user("ada", "Ada Lovelace", &[LEGACY_SUDO_GROUP]);
 
         let report = sync(&system, &config(&[], vec![user("ada", &[], true)]));
@@ -511,11 +617,10 @@ pub(crate) mod tests {
 
     #[test]
     fn grants_and_revokes_sudo_through_the_sudo_group() {
-        let system = FakeSystem::default().with_group("developers").with_user(
-            "ada",
-            "Ada Lovelace",
-            &["ada"],
-        );
+        let system = FakeSystem::default()
+            .with_group("developers")
+            .with_group(SUDO_GROUP)
+            .with_user("ada", "Ada Lovelace", &["ada"]);
 
         let granted = sync(
             &system,
@@ -652,10 +757,8 @@ pub(crate) mod tests {
             status(&report, "daemon")
         );
 
-        // Nothing at all was done to the account.  The sudo group is created
-        // because the configuration asked for a sudoer; the point here is that
-        // this account never joined it.
-        assert_eq!(system.actions(), vec!["create_group starfish-sudo"]);
+        // Nothing at all was done, to this account or to the host.
+        assert!(system.actions().is_empty(), "{:?}", system.actions());
         assert_eq!(system.user("daemon").full_name, "daemon");
         assert!(!system.user("daemon").groups.contains(SUDO_GROUP));
     }

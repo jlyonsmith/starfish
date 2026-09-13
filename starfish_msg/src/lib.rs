@@ -19,7 +19,12 @@ use serde::{Serialize, de::DeserializeOwned};
 
 /// The protocol an agent reports in its [`Hello`]. The controller rejects
 /// agents that do not match.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// Adding a *field* to a message does not need a bump, because `to_vec_named`
+/// matches by name and an unknown one is ignored. Version 2 adds
+/// [`Status::Missing`], which is an enum variant rather than a field: a
+/// version 1 controller cannot decode a report containing it at all.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

@@ -1,9 +1,13 @@
 //! The host operations the agent needs, and the Ubuntu implementation of them.
 //!
 //! Everything that changes the system goes through standard Ubuntu tools
-//! (`useradd`, `usermod`, `groupadd`, `gpasswd`, `getent`, `id`) rather than
-//! touching `/etc/passwd` and friends directly. Putting them behind a trait
-//! also lets the synchronization logic be tested without a real host.
+//! (`useradd`, `usermod`, `gpasswd`, `getent`, `id`) rather than touching
+//! `/etc/passwd` and friends directly. Putting them behind a trait also lets
+//! the synchronization logic be tested without a real host.
+//!
+//! There is deliberately no way to create or delete a group here. Groups are
+//! administered outside Starfish, which only moves users in and out of them,
+//! so the capability is left out of the trait rather than left unused.
 
 use anyhow::{Context, bail};
 use std::path::{Path, PathBuf};
@@ -15,6 +19,9 @@ use std::path::{Path, PathBuf};
 /// prompt that the stock `%sudo ALL=(ALL:ALL) ALL` rule demands. This group is
 /// the one `deploy/starfish-sudoers` gives `NOPASSWD` to, which keeps that
 /// grant away from every account Starfish does not manage.
+///
+/// Created by `scripts/install-agent.sh`, not by a sync: like every other
+/// group it has to exist on the host before anybody can be put in it.
 pub const SUDO_GROUP: &str = "starfish-sudo";
 
 /// How sudo used to be granted, before [`SUDO_GROUP`] existed.
@@ -34,8 +41,9 @@ const GETENT_NOT_FOUND: i32 = 2;
 
 /// The host operations the agent performs.
 pub trait System: Send + Sync {
+    /// Whether the host has this group. There is no counterpart that creates
+    /// one, by design.
     fn group_exists(&self, group: &str) -> anyhow::Result<bool>;
-    fn create_group(&self, group: &str) -> anyhow::Result<()>;
 
     /// The user's numeric id, or `None` if there is no such user. The id is
     /// what tells a Starfish managed account apart from one the distribution
@@ -66,12 +74,6 @@ pub struct Ubuntu;
 impl System for Ubuntu {
     fn group_exists(&self, group: &str) -> anyhow::Result<bool> {
         Ok(getent("group", group)?.is_some())
-    }
-
-    fn create_group(&self, group: &str) -> anyhow::Result<()> {
-        run(&["groupadd", group])?;
-
-        Ok(())
     }
 
     fn user_id(&self, user: &str) -> anyhow::Result<Option<u32>> {

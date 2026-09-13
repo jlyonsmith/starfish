@@ -24,6 +24,7 @@ SUDOERS_GRANT=/etc/sudoers.d/starfish-sudo
 CONF=/etc/starfish_agent.conf
 UNIT=/etc/systemd/system/starfish-agent.service
 SERVICE_USER=starfish
+SUDO_GROUP=starfish-sudo
 
 CONTROLLER_URL=""
 AGENT_KEY=""
@@ -196,6 +197,17 @@ if getent passwd "$SERVICE_USER" > /dev/null; then
 else
     adduser --system --group --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
     changed "user $SERVICE_USER"
+fi
+
+# The group the sudoers rule below grants NOPASSWD to.  A sync never creates a
+# group -- groups are administered outside Starfish -- so this is the one place
+# it comes from, and without it `--sudoer` silently grants nothing.  Empty
+# until somebody is granted sudo; membership is what the grant is.
+if getent group "$SUDO_GROUP" > /dev/null; then
+    same "group $SUDO_GROUP"
+else
+    groupadd --system "$SUDO_GROUP"
+    changed "group $SUDO_GROUP"
 fi
 
 # --- binaries ---------------------------------------------------------------

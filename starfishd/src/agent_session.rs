@@ -317,6 +317,20 @@ async fn record_heartbeat(
 }
 
 fn log_sync_report(host: &Host, report: &SyncReport) {
+    // A group the host does not have is not a failure — groups are
+    // administered outside Starfish — but everybody the configuration puts in
+    // it is going without access, and this log is the only place an
+    // administrator would find that out without logging into the host.
+    for item in &report.groups {
+        if item.status == starfish_msg::Status::Missing {
+            log::warn!(
+                "Host '{}': group '{}' does not exist on the host, so nobody was put in it",
+                host.hostname,
+                item.name
+            );
+        }
+    }
+
     let failures: Vec<_> = report
         .groups
         .iter()

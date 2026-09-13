@@ -70,8 +70,9 @@ starfish_admin ──writes──> PostgreSQL <──reads── starfishd ─�
   the isolation is exact only for `cargo build -p starfishd`.
 - **`starfish_msg`** — the wire protocol, shared by everything else. Encoded as MessagePack
   with `to_vec_named`, so **fields are matched by name and adding one does not break an
-  older peer**. WebSockets frame messages themselves; the Unix socket does not, so
-  `frame::{read,write}` add a big-endian `u32` length prefix. `PROTOCOL_VERSION` is checked
+  older peer** — but a new *enum variant* does, which is what took `PROTOCOL_VERSION` to 2
+  when `Status::Missing` was added. WebSockets frame messages themselves; the Unix socket
+  does not, so `frame::{read,write}` add a big-endian `u32` length prefix. `PROTOCOL_VERSION` is checked
   against the agent's `Hello`.
 - **`starfishd`** — the controller. `controller.rs` holds shared state (db handle, registry,
   generation counter); `agent_registry.rs` maps host id to a connected agent's `mpsc` sender
@@ -95,12 +96,21 @@ starfish_admin ──writes──> PostgreSQL <──reads── starfishd ─�
   arguments — that is what makes the rule safe. `validate.rs` re-checks everything
   (name charset, uid ≥ 1000, no colon or newline in a full name, key paths under the home
   `getent` reports) because it cannot assume the controller or database is trustworthy.
-- **Syncing is additive except for group membership.** Users and groups are created, never
-  deleted. Membership is removed only for groups the controller sent, plus `SUDO_GROUP` —
-  that set is built in `sync::sync` and is the only revocation path. `authorized_keys` is
-  owned outright and overwritten.
+- **Syncing is additive except for group membership.** Users are created, never deleted.
+  Membership is removed only for groups the controller sent, plus `SUDO_GROUP` — that set
+  is built in `sync::sync` and is the only revocation path. `authorized_keys` is owned
+  outright and overwritten.
+- **Groups are not Starfish's to create.** They are administered outside it and expected to
+  exist on the host already; `sync::sync` only moves users in and out. There is deliberately
+  no `create_group` on the `System` trait — the capability is absent, not merely unused, so
+  reaching for it means adding it back and justifying that. A configured group the host does
+  not have is reported as `Status::Missing` (not `Failed`, and not fatal to the rest of the
+  configuration) and warned about twice: once for the group, once per user who is going
+  without the access, which is what says *who* is affected. Warnings go to the helper's
+  stderr, which `starfish_agent::agent::run_helper` logs; `Missing` is what carries it up to
+  the controller's log.
 - **Security groups have no table of their own.** They are a `text[]` column on
-  `host_group_users`, so a group exists exactly while somebody is in it, and the set a host
+  `host_group_users`, so a group is sent exactly while somebody is in it, and the set a host
   is sent is the union across the host group's members (`Controller::host_config`). The
   cost is that emptying a group takes it out of the configuration rather than sending it
   empty, and the previous invariant means the agent then never revokes it — the stale
@@ -110,20 +120,24 @@ starfish_admin ──writes──> PostgreSQL <──reads── starfishd ─�
   are created with no password, so they could never satisfy the stock
   `%sudo ALL=(ALL:ALL) ALL` rule; `deploy/starfish-sudoers` gives `starfish-sudo` a
   `NOPASSWD` rule, installed to `/etc/sudoers.d/starfish-sudo`. Using a group of Starfish's
-  own keeps that grant away from accounts it does not manage. `sync::sync` creates the group
-  when a configuration contains any sudoer, so it never appears on a host with none, and it
-  is the one group in the report the controller did not send. Both integration suites assert
-  `sudo -n` actually succeeds — group membership alone passed even when sudo was unusable.
+  own keeps that grant away from accounts it does not manage. `scripts/install-agent.sh`
+  creates the group next to that rule — a sync never creates one — and `sync::sync` only
+  looks for it when a configuration contains a sudoer, so a host with none is not warned
+  about a group it will never use. It is still the one group in the report the controller did
+  not send. `docker/Dockerfile.test` creates it too, standing in for the installer. Both
+  integration suites assert `sudo -n` actually succeeds — group membership alone passed even
+  when sudo was unusable.
 - **`system::LEGACY_SUDO_GROUP` ("sudo") is managed for removal only.** It is in `managed`
   but never in `wanted`, so an upgrade moves existing sudoers off it. Dropping it from the
   set instead would strand the old grant forever, because Starfish never removes anybody
   from a group it does not manage.
 - **Host changes go through `system::System`.** The `Ubuntu` implementation shells out to
-  `useradd`, `usermod`, `groupadd`, `gpasswd`, `getent` and `id` (`gpasswd`, never
-  `usermod --groups`, which would drop unmanaged groups). The trait exists so `sync.rs` can
-  be tested against `FakeSystem` on macOS; keep new host operations behind it.
+  `useradd`, `usermod`, `gpasswd`, `getent` and `id` (`gpasswd`, never `usermod --groups`,
+  which would drop unmanaged groups). The trait exists so `sync.rs` can be tested against
+  `FakeSystem` on macOS; keep new host operations behind it.
 - **Every user and group is attempted independently** and reported as
-  `Created`/`Updated`/`Unchanged`/`Failed`. One bad entry must never abort the rest.
+  `Created`/`Updated`/`Unchanged`/`Missing`/`Failed`. One bad entry must never abort the
+  rest. `Missing` is groups only, and `Created` is users only.
 - **The generation counter** is seeded from the wall clock so an agent reconnecting after a
   controller restart never sees a configuration numbered below what it already applied.
 - **The controller's database grants are `SELECT` plus `UPDATE` on three `hosts` columns**

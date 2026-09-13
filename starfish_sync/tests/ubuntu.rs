@@ -232,12 +232,36 @@ fn synchronizes_a_real_ubuntu_host() {
         vec![ada(&["developers", "deploy"], false)],
     );
 
-    // --- creating what is missing -------------------------------------------
+    // --- a group the host does not have -------------------------------------
+    // Groups are administered outside Starfish, so the very first sync finds
+    // neither of these and must not make them.  The user is still created:
+    // a group the host does not have is nobody's failure.
     let report = host.sync(&base);
 
-    assert_eq!(status(&report, "developers"), Status::Created);
-    assert_eq!(status(&report, "deploy"), Status::Created);
+    assert_eq!(status(&report, "developers"), Status::Missing);
+    assert_eq!(status(&report, "deploy"), Status::Missing);
     assert_eq!(status(&report, "ada"), Status::Created);
+    assert!(
+        host.try_exec(None, &["getent", "group", "developers"], &[])
+            .0
+            .code()
+            == Some(2),
+        "the helper created a group"
+    );
+
+    let groups = host.groups("ada");
+
+    assert!(!groups.contains(&"developers".to_string()), "{groups:?}");
+
+    // --- the groups exist, put there by whoever administers this host -------
+    host.exec(&["groupadd", "developers"]);
+    host.exec(&["groupadd", "deploy"]);
+
+    let report = host.sync(&base);
+
+    assert_eq!(status(&report, "developers"), Status::Unchanged);
+    assert_eq!(status(&report, "deploy"), Status::Unchanged);
+    assert_eq!(status(&report, "ada"), Status::Updated);
 
     let passwd = host.passwd("ada").expect("ada was not created");
 
@@ -346,6 +370,40 @@ fn synchronizes_a_real_ubuntu_host() {
 
     assert_eq!(status(&host.sync(&renamed), "ada"), Status::Updated);
     assert_eq!(host.passwd("ada").unwrap()[4], "Ada A. Lovelace");
+
+    // --- a group deleted on the host while a user was in it -----------------
+    // `groupdel` takes the memberships with it, so the next sync finds ada out
+    // of a group the configuration still puts her in.  Starfish reports it and
+    // leaves it alone rather than putting the group back.
+    assert!(host.groups("ada").contains(&"developers".to_string()));
+    host.exec(&["groupdel", "developers"]);
+
+    let report = host.sync(&renamed);
+
+    assert_eq!(status(&report, "developers"), Status::Missing);
+    assert_eq!(
+        host.try_exec(None, &["getent", "group", "developers"], &[])
+            .0
+            .code(),
+        Some(2),
+        "the deleted group was recreated"
+    );
+    // The rest of the account is untouched by its group going missing.
+    assert_eq!(host.passwd("ada").unwrap()[4], "Ada A. Lovelace");
+    assert!(
+        host.exec(&["cat", "/home/ada/.ssh/authorized_keys"])
+            .contains("ada-laptop")
+    );
+
+    // Put back by the host's administrator, and the next sync rejoins her.
+    host.exec(&["groupadd", "developers"]);
+
+    assert_eq!(status(&host.sync(&renamed), "ada"), Status::Updated);
+    assert!(
+        host.groups("ada").contains(&"developers".to_string()),
+        "membership was not restored: {:?}",
+        host.groups("ada")
+    );
 
     // --- a system account is refused ----------------------------------------
     let before = host.passwd("daemon").expect("daemon should exist");

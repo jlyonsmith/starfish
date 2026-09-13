@@ -302,6 +302,10 @@ impl Agent {
     }
 }
 
+/// What the helper is called in the log, whether or not `sudo` is what was
+/// actually spawned.
+const HELPER_NAME: &str = "starfish-sync";
+
 /// Runs the privileged helper, writing the configuration to its standard input
 /// and reading the report from its standard output.
 fn run_helper(
@@ -332,9 +336,15 @@ fn run_helper(
         bail!("{program} failed with {status}: {stderr}");
     }
 
-    // The helper logs nothing on success, so anything here is worth passing on.
-    if !stderr.is_empty() {
-        log::warn!("{program}: {stderr}");
+    // The helper warns here about anything it noticed but did not treat as a
+    // failure, such as a group the host does not have.  One log line each, so
+    // they stay greppable, and labelled with the helper rather than with
+    // `program` -- which is `sudo`, and said none of it.
+    for line in stderr.lines() {
+        log::warn!(
+            "{HELPER_NAME}: {}",
+            line.trim().trim_start_matches("warning: ")
+        );
     }
 
     starfish_msg::from_slice(&output.stdout)

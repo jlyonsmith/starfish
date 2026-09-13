@@ -103,7 +103,7 @@ refresh [--hostname]      Push configuration to agents now
 `refresh` only talks to the controller, so it needs no database connection.
 Everything else needs no controller.
 
-`host-group add-user` is how a security group comes into being: a group exists on a host group's hosts because somebody is in it, and the set a host is sent is the union across the group's members. Re-running the command replaces that user's whole set, so it is also how one is taken away. Note that a group nobody is left in vanishes from the configuration rather than being sent as empty, and the agent only revokes membership of groups it is sent — so removing the last member of a group leaves that membership in place on the hosts.
+`host-group add-user` is how a security group enters the configuration: a group is sent to a host because somebody in its host group is in it, and the set a host is sent is the union across the group's members. Re-running the command replaces that user's whole set, so it is also how one is taken away. The group itself must already exist on the host — Starfish never creates one — and a group nobody is left in vanishes from the configuration rather than being sent as empty, so removing the last member leaves that membership in place on the hosts.
 
 Nothing in the schema cascades, so the tool cleans up explicitly: removing a user also removes their SSH keys and memberships. Removing a host group that still has hosts is refused rather than orphaning them.
 
@@ -304,17 +304,18 @@ The controller refuses to start if the group does not exist, rather than falling
 
 Synchronizing is deliberately additive, with one exception. Worth knowing before you point it at a live machine:
 
-- **Users and groups are created, never deleted.** A user removed from the database keeps their account; the agent stops managing it. Removing accounts is a manual decision.
+- **Groups are never created or deleted.** They are administered outside Starfish and are expected to exist on the host already; the agent only moves users in and out of them. A group in the configuration that the host does not have is reported as *missing* and logged as a warning by both the agent and the controller, naming the users who are going without the access it was meant to give them — it is not a failure, and everything else in the configuration is still applied.
+- **Users are created, never deleted.** A user removed from the database keeps their account; the agent stops managing it. Removing accounts is a manual decision.
 - **Group membership is removed**, but only for groups the controller sent. A user in `docker` keeps `docker` even though Starfish knows nothing about it. This is the only way to revoke access, which is why it is the exception.
-- **Sudo is membership of the `starfish-sudo` group**, granted and revoked like any other managed group rather than through a per-user `sudoers.d` file. That group, not Ubuntu's own `sudo`, because managed accounts have **no password at all** — people authenticate with an SSH key — and so could never answer the prompt that the stock `%sudo ALL=(ALL:ALL) ALL` rule demands. `deploy/starfish-sudoers` gives `starfish-sudo` a `NOPASSWD` rule instead, which the agent installer puts in `/etc/sudoers.d/starfish-sudo`. Keeping it off `sudo` means granting passwordless root to the accounts Starfish manages cannot quietly change what a local administrator already in `sudo` has to do. The group is created on first use and, like every other group, never deleted.
+- **Sudo is membership of the `starfish-sudo` group**, granted and revoked like any other managed group rather than through a per-user `sudoers.d` file. That group, not Ubuntu's own `sudo`, because managed accounts have **no password at all** — people authenticate with an SSH key — and so could never answer the prompt that the stock `%sudo ALL=(ALL:ALL) ALL` rule demands. `deploy/starfish-sudoers` gives `starfish-sudo` a `NOPASSWD` rule instead, which the agent installer puts in `/etc/sudoers.d/starfish-sudo`. Keeping it off `sudo` means granting passwordless root to the accounts Starfish manages cannot quietly change what a local administrator already in `sudo` has to do. `scripts/install-agent.sh` creates the group alongside that rule, because a sync never creates one; if it is missing, `--sudoer` grants nothing and says so in the log.
 - **`~/.ssh/authorized_keys` is owned outright.** The agent writes a header and exactly the keys in the database, so local edits are overwritten. A user with no keys in the database ends up with a file containing only the header, and loses key based access — populate `ssh_keys` before rolling agents out.
 - New users are created with `--create-home` and `/bin/bash`, and **no password**. The account is usable over SSH with a key and cannot be logged into with a password at all.
 
-Everything goes through standard Ubuntu tools: `useradd`, `usermod`, `groupadd`, `gpasswd`, `getent` and `id`. Group membership uses `gpasswd`, not `usermod --groups`, because the latter replaces a user's whole supplementary list and would silently drop unmanaged groups.
+Everything goes through standard Ubuntu tools: `useradd`, `usermod`, `gpasswd`, `getent` and `id` — no `groupadd` or `groupdel`, which the agent has no way to reach. Group membership uses `gpasswd`, not `usermod --groups`, because the latter replaces a user's whole supplementary list and would silently drop unmanaged groups.
 
 These all run in `starfish-sync`, not in the agent.
 
-Every group and user is attempted independently, and each is reported back as created, updated, unchanged or failed with a message. One broken account never blocks anybody else's access.
+Every group and user is attempted independently, and each is reported back as created, updated, unchanged, missing or failed with a message. One broken account never blocks anybody else's access.
 
 ### Connections and health
 

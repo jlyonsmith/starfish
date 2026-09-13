@@ -105,6 +105,12 @@ sleep 4
 kill -0 "$CONTROLLER_PID" 2>/dev/null || { cat "$STAGE/controller.log"; fail "the controller did not start"; }
 
 # --- install and start the unit --------------------------------------------
+# Security groups are administered outside Starfish and a sync never creates
+# one, so the host has to have it before the agent can put anybody in it.  The
+# VM is reused between runs, hence the check.
+info "Creating the security group the host is expected to already have"
+limactl shell "$VM" sh -c 'getent group developers > /dev/null || sudo groupadd developers'
+
 info "Installing the agent in the VM with scripts/install-agent.sh"
 limactl shell "$VM" sudo rm -rf /tmp/starfish
 limactl shell "$VM" mkdir -p /tmp/starfish
@@ -184,8 +190,12 @@ info "Checking the host was actually configured"
 
 check "the user exists" "Ada Lovelace" \
     "$(limactl shell "$VM" getent passwd ada | cut -d: -f5)"
-check "the security group was created" "0" \
+check "the user joined the existing security group" "0" \
     "$(limactl shell "$VM" sh -c 'id -nG ada | grep -qw developers; echo $?')"
+# Created by install-agent.sh rather than by a sync, which is the only reason
+# the sudo grant below can work at all.
+check "the installer created the sudo group" "0" \
+    "$(limactl shell "$VM" sh -c 'getent group starfish-sudo > /dev/null; echo $?')"
 # `grep -w sudo` is not good enough here: a hyphen is not a word character, so
 # it matches inside "starfish-sudo" too.  Exact whole-line matching keeps the
 # two groups distinguishable.
