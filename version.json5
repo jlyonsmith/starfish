@@ -1,9 +1,9 @@
 {
   vars: {
     major: 0,
-    minor: 1,
+    minor: 2,
     patch: 0,
-    build: 2,
+    build: 3,
     tz: "America/Los_Angeles",
   },
   calcVars: {
