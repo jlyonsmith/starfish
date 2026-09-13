@@ -81,15 +81,19 @@ admin() { ./target/debug/starfish-admin -p "$DB_URL" "$@"; }
 admin init-db > /dev/null
 admin user add ada --first-name Ada --last-name Lovelace \
     --email ada@example.com --ssh-key "laptop:ssh-ed25519 AAAAC3-ada-laptop" > /dev/null
-admin host-group add --name web > /dev/null
-admin host-group add-user --name web --alias ada --sudoer \
+admin host-group add web > /dev/null
+admin host-group add-user web --alias ada --sudoer \
     --security-group developers > /dev/null
 
 # The VM knows itself by its Lima hostname, but the controller identifies hosts
 # by agent key, so the name here only has to be consistent.
 VM_HOSTNAME=$(limactl shell "$VM" hostname)
-admin host add --hostname "$VM_HOSTNAME" --host-group web > /dev/null
-AGENT_KEY=$(admin host show --hostname "$VM_HOSTNAME" | awk '/agent key/ { print $3 }')
+admin host add "$VM_HOSTNAME" --host-group web > /dev/null
+AGENT_KEY=$(admin host show "$VM_HOSTNAME" | awk '/^Agent key:/ { print $3 }')
+# An empty key here would reach the installer, which falls back to whatever
+# /etc/starfish_agent.conf already holds, and the run would fail much later as
+# an agent the controller will not authenticate.
+[ -n "$AGENT_KEY" ] || fail "no agent key in the output of \`host show\`"
 
 info "Starting the controller on 0.0.0.0:$LISTEN_PORT"
 ./target/debug/starfishd --config /nonexistent --sql-server "$DB_URL" \

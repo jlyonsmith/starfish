@@ -116,6 +116,11 @@ async fn show(db: &mut Db, hostname: &str) -> anyhow::Result<()> {
     }));
 
     println!("{table}");
+    // Deliberately outside the table, which `list` shares and which must not
+    // grow a column holding a credential.  `scripts/test-systemd.sh` reads the
+    // key from this line, so keep the label in step with it.
+    println!();
+    println!("Agent key: {}", host.agent_key);
 
     Ok(())
 }
@@ -172,10 +177,10 @@ async fn rekey(db: &mut Db, hostname: &str) -> anyhow::Result<()> {
         .await
         .context("Unable to update the host's agent key")?;
 
-    println!("New agent key for '{hostname}': {agent_key}");
-    println!();
-    println!("The agent on this host cannot reconnect until its configuration");
-    println!("is updated with this key.");
+    println!("New agent key for '{hostname}': {agent_key}\n");
+    println!(
+        "The agent on this host cannot reconnect until its configuration is updated with this key."
+    );
 
     Ok(())
 }
