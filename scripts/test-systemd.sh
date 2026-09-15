@@ -89,7 +89,7 @@ admin host-group add-user web --alias ada --sudoer \
 # by agent key, so the name here only has to be consistent.
 VM_HOSTNAME=$(limactl shell "$VM" hostname)
 admin host add "$VM_HOSTNAME" --host-group web > /dev/null
-AGENT_KEY=$(admin host show "$VM_HOSTNAME" | awk '/^Agent key:/ { print $3 }')
+AGENT_KEY=$(admin host show "$VM_HOSTNAME" | tail -n +3 | sd '\|' '' | awk '{ print $3 }')
 # An empty key here would reach the installer, which falls back to whatever
 # /etc/starfish_agent.conf already holds, and the run would fail much later as
 # an agent the controller will not authenticate.

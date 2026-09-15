@@ -8,7 +8,7 @@ description = "Starfish privileged host synchronizer"
 anyhow = "1.0.102"
 duct = "1.1.1"
 libc = "0.2"
-starfish_msg = { version = "0.1.0", path = "../starfish_msg" }
+starfish_msg = { path = "../starfish_msg" }
 
 [[bin]]
 name = "starfish-sync"

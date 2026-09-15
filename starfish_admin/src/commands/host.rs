@@ -1,11 +1,32 @@
 use crate::admin_args::HostOp;
-use crate::commands::{find_host, find_host_group, make_table};
+use crate::commands::{DEFAULT_TABLE_STYLE, find_host, find_host_group, format_time};
 use anyhow::{Context, bail};
-use starfish_db::{Host, HostGroup, format_timestamp};
+use starfish_db::{Host, HostGroup};
 use starfish_msg::AgentKey;
 use std::iter;
-use tabled::Tabled;
+use tabled::{Table, derive::display};
 use toasty::Db;
+
+/// Whether the host's agent has checked in when it said it would.
+fn get_health(next_heartbeat_at: &Option<jiff::Timestamp>) -> String {
+    let Some(next_heartbeat_at) = next_heartbeat_at else {
+        return "Unknown".to_string();
+    };
+
+    if *next_heartbeat_at < jiff::Timestamp::now() {
+        "Overdue".to_string()
+    } else {
+        "OK".to_string()
+    }
+}
+
+fn get_contacted_at(contacted_at: &Option<jiff::Timestamp>) -> String {
+    if let Some(contacted_at) = contacted_at {
+        format_time(contacted_at)
+    } else {
+        "Never".to_string()
+    }
+}
 
 pub async fn run(db: &mut Db, op: &HostOp) -> anyhow::Result<()> {
     match op {
@@ -14,7 +35,7 @@ pub async fn run(db: &mut Db, op: &HostOp) -> anyhow::Result<()> {
             host_group,
             info,
         } => add(db, hostname, host_group, info).await,
-        HostOp::List { verbose } => list(db, *verbose).await,
+        HostOp::List {} => list(db).await,
         HostOp::Show { hostname } => show(db, hostname).await,
         HostOp::Update {
             hostname,
@@ -53,74 +74,86 @@ async fn add(db: &mut Db, hostname: &str, host_group: &str, info: &str) -> anyho
     Ok(())
 }
 
-/// A row of `host list --verbose`. `Host` derives `Tabled`, but this listing is
-/// not a host: it joins the group's name, derives health, and deliberately
-/// leaves out the agent key.
-#[derive(Tabled)]
-#[tabled(rename_all = "Upper Title Case")]
-struct HostRow {
-    hostname: String,
-    host_group: String,
-    health: String,
-    contacted_at: String,
-    info: String,
-}
+async fn list(db: &mut Db) -> anyhow::Result<()> {
+    #[derive(tabled::Tabled)]
+    #[tabled(rename_all = "Upper Title Case")]
+    struct HostRow<'a> {
+        hostname: &'a str,
+        host_group: String,
+        health: String,
+        contacted_at: String,
+        #[tabled(display("format_time"))]
+        created_at: &'a jiff::Timestamp,
+        #[tabled(display("format_time"))]
+        updated_at: &'a jiff::Timestamp,
+        #[tabled(display("display::wrap", 25))]
+        info: &'a str,
+    }
 
-async fn list(db: &mut Db, verbose: bool) -> anyhow::Result<()> {
     let hosts = Host::all()
         .order_by(Host::fields().hostname().asc())
         .exec(db)
         .await
         .context("Unable to read hosts")?;
+    let mut rows = Vec::<HostRow<'_>>::with_capacity(hosts.len());
 
-    if !verbose {
-        for host in hosts {
-            println!("{}", host.hostname);
-        }
-
-        return Ok(());
-    }
-
-    let mut rows = Vec::with_capacity(hosts.len());
-
-    for host in hosts {
+    for host in &hosts {
         let group = HostGroup::get_by_id(db, host.host_group_id)
             .await
             .context("Unable to read the host's group")?;
 
         rows.push(HostRow {
-            hostname: host.hostname,
-            host_group: group.name,
+            hostname: &host.hostname,
+            host_group: group.name.clone(),
+            info: &host.info,
             health: get_health(&host.next_heartbeat_at).to_string(),
             contacted_at: get_contacted_at(&host.contacted_at).to_string(),
-            info: host.info,
+            created_at: &host.created_at,
+            updated_at: &host.updated_at,
         });
     }
 
-    println!("{}", make_table(rows));
+    let mut table = Table::new(rows);
+
+    println!("{}", table.with(DEFAULT_TABLE_STYLE));
 
     Ok(())
 }
 
 async fn show(db: &mut Db, hostname: &str) -> anyhow::Result<()> {
+    #[derive(tabled::Tabled)]
+    #[tabled(rename_all = "Upper Title Case")]
+    struct HostRow<'a> {
+        hostname: &'a str,
+        host_group: String,
+        agent_key: &'a str,
+        health: String,
+        contacted_at: String,
+        #[tabled(display("format_time"))]
+        created_at: &'a jiff::Timestamp,
+        #[tabled(display("format_time"))]
+        updated_at: &'a jiff::Timestamp,
+        #[tabled(display("display::wrap", 25))]
+        info: &'a str,
+    }
+
     let host = find_host(db, hostname).await?;
     let group = HostGroup::get_by_id(db, host.host_group_id)
         .await
         .context("Unable to read the host's group")?;
-    let table = make_table(iter::once(HostRow {
-        hostname: host.hostname,
-        host_group: group.name,
+    let row = HostRow {
+        hostname: &host.hostname,
+        host_group: group.name.clone(),
+        info: &host.info,
+        agent_key: &host.agent_key,
         health: get_health(&host.next_heartbeat_at).to_string(),
         contacted_at: get_contacted_at(&host.contacted_at).to_string(),
-        info: host.info,
-    }));
+        created_at: &host.created_at,
+        updated_at: &host.updated_at,
+    };
+    let mut table = Table::new(iter::once(row));
 
-    println!("{table}");
-    // Deliberately outside the table, which `list` shares and which must not
-    // grow a column holding a credential.  `scripts/test-systemd.sh` reads the
-    // key from this line, so keep the label in step with it.
-    println!();
-    println!("Agent key: {}", host.agent_key);
+    println!("{}", table.with(DEFAULT_TABLE_STYLE));
 
     Ok(())
 }
@@ -183,25 +216,4 @@ async fn rekey(db: &mut Db, hostname: &str) -> anyhow::Result<()> {
     );
 
     Ok(())
-}
-
-/// Whether the host's agent has checked in when it said it would.
-fn get_health(next_heartbeat_at: &Option<jiff::Timestamp>) -> String {
-    let Some(next_heartbeat_at) = next_heartbeat_at else {
-        return "Unknown".to_string();
-    };
-
-    if *next_heartbeat_at < jiff::Timestamp::now() {
-        "Overdue".to_string()
-    } else {
-        "OK".to_string()
-    }
-}
-
-fn get_contacted_at(contacted_at: &Option<jiff::Timestamp>) -> String {
-    if let Some(contacted_at) = contacted_at {
-        format_timestamp(contacted_at)
-    } else {
-        "Never".to_string()
-    }
 }

@@ -1,16 +1,16 @@
 use crate::admin_args::HostGroupOp;
-use crate::commands::{find_host_group, find_user, make_table};
+use crate::commands::{DEFAULT_TABLE_STYLE, find_host_group, find_user, format_time};
 use anyhow::{Context, bail};
-use starfish_db::{Host, HostGroup, HostGroupUser};
+use starfish_db::{Host, HostGroup, HostGroupUser, User};
 use std::collections::BTreeSet;
 use std::iter;
-use tabled::Tabled;
+use tabled::Table;
 use toasty::Db;
 
 pub async fn run(db: &mut Db, op: &HostGroupOp) -> anyhow::Result<()> {
     match op {
         HostGroupOp::Add { name } => add(db, name).await,
-        HostGroupOp::List { verbose } => list(db, *verbose).await,
+        HostGroupOp::List {} => list(db).await,
         HostGroupOp::Show { name } => show(db, name).await,
         HostGroupOp::Remove { name } => remove(db, name).await,
         HostGroupOp::AddUser {
@@ -35,104 +35,151 @@ async fn add(db: &mut Db, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A row of `host-group list --verbose`. These are counts of what belongs to
-/// the group, not fields of `HostGroup`.
-#[derive(Tabled)]
-#[tabled(rename_all = "Upper Title Case")]
-struct HostGroupRow {
-    name: String,
-    hosts: usize,
-    users: usize,
-    security_groups: usize,
-}
+async fn list(db: &mut Db) -> anyhow::Result<()> {
+    #[derive(tabled::Tabled)]
+    #[tabled(rename_all = "Upper Title Case")]
+    struct HostGroupRow<'a> {
+        name: &'a str,
+        num_hosts: usize,
+        hosts: String,
+        num_users: usize,
+        users: String,
+        #[tabled(display("format_time"))]
+        created_at: &'a jiff::Timestamp,
+        #[tabled(display("format_time"))]
+        updated_at: &'a jiff::Timestamp,
+    }
 
-async fn list(db: &mut Db, verbose: bool) -> anyhow::Result<()> {
     let groups = HostGroup::all()
         .order_by(HostGroup::fields().name().asc())
         .exec(db)
         .await
         .context("Unable to read host groups")?;
-
-    if !verbose {
-        for group in groups {
-            println!("{}", group.name);
-        }
-
-        return Ok(());
-    }
-
     let mut rows = Vec::with_capacity(groups.len());
 
-    for group in groups {
+    for group in &groups {
         let hosts = Host::filter_by_host_group_id(group.id)
             .exec(db)
             .await
             .context("Unable to read the group's hosts")?;
-        let users = HostGroupUser::filter_by_host_group_id(group.id)
+        let host_group_users = HostGroupUser::filter_by_host_group_id(group.id)
             .exec(db)
             .await
             .context("Unable to read the group's users")?;
+        let mut users = Vec::<String>::with_capacity(host_group_users.len());
 
-        // Security groups exist only by being named on a membership, so the
-        // group's set of them is the union across its users.
-        let security_groups: BTreeSet<&str> = users
-            .iter()
-            .flat_map(|user| user.security_groups.iter().map(String::as_str))
-            .collect();
+        for host_group_user in &host_group_users {
+            let user = User::get_by_id(db, host_group_user.user_id)
+                .await
+                .context("Unable to read the user")?;
+            users.push(user.alias.clone());
+        }
 
         rows.push(HostGroupRow {
-            name: group.name,
-            hosts: hosts.len(),
-            users: users.len(),
-            security_groups: security_groups.len(),
+            name: &group.name,
+            num_hosts: host_group_users.len(),
+            hosts: hosts
+                .iter()
+                .map(|h| h.hostname.clone())
+                .collect::<Vec<_>>()
+                .join(", "),
+            num_users: host_group_users.len(),
+            users: users.join(", "),
+            created_at: &group.created_at,
+            updated_at: &group.updated_at,
         });
     }
 
-    println!("{}", make_table(rows));
+    let mut table = Table::new(rows);
+
+    println!("{}", table.with(DEFAULT_TABLE_STYLE));
 
     Ok(())
 }
 
-#[derive(Tabled)]
-#[tabled(rename_all = "Upper Title Case")]
-struct HostRow<'a> {
-    hostname: String,
-    info: String,
-    created_at: &'a jiff::Timestamp,
-    updated_at: &'a jiff::Timestamp,
-}
-
 async fn show(db: &mut Db, name: &str) -> anyhow::Result<()> {
+    #[derive(tabled::Tabled)]
+    #[tabled(rename_all = "Upper Title Case")]
+    struct HostGroupRow<'a> {
+        name: &'a str,
+        #[tabled(display("format_time"))]
+        created_at: &'a jiff::Timestamp,
+        #[tabled(display("format_time"))]
+        updated_at: &'a jiff::Timestamp,
+    }
+
+    #[derive(tabled::Tabled)]
+    #[tabled(rename_all = "Upper Title Case")]
+    struct HostRow<'a> {
+        hostname: &'a str,
+        #[tabled(display("format_time"))]
+        created_at: &'a jiff::Timestamp,
+        #[tabled(display("format_time"))]
+        updated_at: &'a jiff::Timestamp,
+    }
+
+    #[derive(tabled::Tabled)]
+    #[tabled(rename_all = "Upper Title Case")]
+    struct UserRow<'a> {
+        alias: String,
+        security_groups: String,
+        sudoer: &'static str,
+        #[tabled(display("format_time"))]
+        created_at: &'a jiff::Timestamp,
+        #[tabled(display("format_time"))]
+        updated_at: &'a jiff::Timestamp,
+    }
+
     let group = find_host_group(db, name).await?;
-    let hosts = Host::filter_by_host_group_id(group.id)
-        .exec(db)
-        .await
-        .context("Unable to read the group's hosts")?;
-    let users = HostGroupUser::filter_by_host_group_id(group.id)
-        .exec(db)
-        .await
-        .context("Unable to read the group's users")?;
-    let table = make_table(iter::once(HostGroupRow {
-        name: group.name.clone(),
-        hosts: hosts.len(),
-        users: users.len(),
-        security_groups: 0,
-    }));
+    let row = HostGroupRow {
+        name: &group.name,
+        created_at: &group.created_at,
+        updated_at: &group.updated_at,
+    };
+    let mut table = Table::new(iter::once(row));
 
-    println!("{table}\n");
+    println!("{}\n", table.with(DEFAULT_TABLE_STYLE));
 
     let hosts = Host::filter_by_host_group_id(group.id)
         .exec(db)
         .await
         .context("Unable to read the group's hosts")?;
-    let table = make_table(hosts.iter().map(|host| HostRow {
-        hostname: host.hostname.clone(),
-        info: host.info.clone(),
+
+    let mut table = Table::new(hosts.iter().map(|host| HostRow {
+        hostname: host.hostname.as_str(),
         created_at: &host.created_at,
         updated_at: &host.updated_at,
     }));
 
-    println!("{table}");
+    println!("{}\n", table.with(DEFAULT_TABLE_STYLE));
+
+    let host_group_users = HostGroupUser::filter_by_host_group_id(group.id)
+        .exec(db)
+        .await
+        .context("Unable to read the group's users")?;
+    let mut rows = Vec::<UserRow>::with_capacity(host_group_users.len());
+
+    for host_group_user in &host_group_users {
+        let user = User::get_by_id(db, host_group_user.user_id)
+            .await
+            .context("Cannot get user")?;
+
+        rows.push(UserRow {
+            alias: user.alias.clone(),
+            security_groups: host_group_user.security_groups.join(", "),
+            sudoer: if host_group_user.is_sudoer {
+                "Yes"
+            } else {
+                "No"
+            },
+            created_at: &host_group_user.created_at,
+            updated_at: &host_group_user.updated_at,
+        });
+    }
+
+    let mut table = Table::new(rows);
+
+    println!("{}", table.with(DEFAULT_TABLE_STYLE));
 
     Ok(())
 }

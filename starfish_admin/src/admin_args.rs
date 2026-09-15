@@ -101,10 +101,7 @@ pub enum UserOp {
     },
 
     /// List all users
-    List {
-        #[arg(long, short)]
-        verbose: bool,
-    },
+    List {},
 
     /// Show one user, with their keys, groups and hosts
     Show { alias: String },
@@ -150,10 +147,7 @@ pub enum HostGroupOp {
     Add { name: String },
 
     /// List all host groups
-    List {
-        #[arg(long, short)]
-        verbose: bool,
-    },
+    List {},
 
     /// Show information about a host group
     Show { name: String },
@@ -200,10 +194,7 @@ pub enum HostOp {
     },
 
     /// List all hosts
-    List {
-        #[arg(long, short)]
-        verbose: bool,
-    },
+    List {},
 
     /// Show one host, including its agent key
     Show { hostname: String },

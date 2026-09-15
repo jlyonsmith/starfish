@@ -1,8 +1,9 @@
 use crate::admin_args::UserOp;
-use crate::commands::{find_user, make_table};
+use crate::commands::{DEFAULT_TABLE_STYLE, find_user, format_time};
 use anyhow::{Context, bail};
 use starfish_db::{HostGroup, HostGroupUser, SshKey, User};
 use std::iter;
+use tabled::{Table, derive::display};
 use toasty::Db;
 
 pub async fn run(db: &mut Db, op: &UserOp) -> anyhow::Result<()> {
@@ -14,7 +15,7 @@ pub async fn run(db: &mut Db, op: &UserOp) -> anyhow::Result<()> {
             email,
             ssh_keys,
         } => add(db, alias, first_name, last_name, email, ssh_keys).await,
-        UserOp::List { verbose } => list(db, *verbose).await,
+        UserOp::List {} => list(db).await,
         UserOp::Show { alias } => show(db, alias).await,
         UserOp::Update {
             alias,
@@ -54,78 +55,161 @@ async fn add(
 
     let user = builder.exec(db).await.context("Unable to add the user")?;
 
-    println!("Added user '{}' ({})", user.alias, user.id);
+    println!("Added user '{}'", user.alias);
 
     Ok(())
 }
 
-async fn list(db: &mut Db, verbose: bool) -> anyhow::Result<()> {
+async fn list(db: &mut Db) -> anyhow::Result<()> {
+    #[derive(tabled::Tabled)]
+    #[tabled(rename_all = "Upper Title Case")]
+    struct UserListRow<'a> {
+        alias: &'a str,
+        first_name: &'a str,
+        last_name: &'a str,
+        host_groups: String,
+        #[tabled(display("format_time"))]
+        created_at: &'a jiff::Timestamp,
+        #[tabled(display("format_time"))]
+        updated_at: &'a jiff::Timestamp,
+    }
+
     let users = User::all()
         .order_by(User::fields().alias().asc())
         .exec(db)
         .await
         .context("Unable to read users")?;
+    let mut rows = Vec::<UserListRow<'_>>::with_capacity(users.len());
 
-    if !verbose {
-        for user in users {
-            println!("{}", user.alias);
+    for user in &users {
+        let host_group_users = HostGroupUser::filter_by_user_id(user.id)
+            .exec(db)
+            .await
+            .context("Unable to read the user's host groups")?;
+        let mut group_names = Vec::<String>::new();
+
+        for host_group_user in host_group_users {
+            let group = HostGroup::get_by_id(db, host_group_user.host_group_id)
+                .await
+                .context("Unable to read a host group")?;
+
+            group_names.push(group.name.clone());
         }
 
-        return Ok(());
+        rows.push(UserListRow {
+            alias: &user.alias,
+            first_name: &user.first_name,
+            last_name: &user.last_name,
+            host_groups: group_names.join(", "),
+            created_at: &user.created_at,
+            updated_at: &user.updated_at,
+        });
     }
 
-    let table = make_table(users);
+    let mut table = Table::new(rows);
 
-    println!("{table}");
+    println!("{}\n", table.with(DEFAULT_TABLE_STYLE));
 
     Ok(())
 }
 
-#[derive(tabled::Tabled)]
-#[tabled(rename_all = "Upper Title Case")]
-struct UserHostGroupRow<'a> {
-    host_group: String,
-    sudoer: &'a str,
-    created_at: &'a jiff::Timestamp,
-    updated_at: &'a jiff::Timestamp,
-}
-
 async fn show(db: &mut Db, alias: &str) -> anyhow::Result<()> {
+    #[derive(tabled::Tabled)]
+    #[tabled(rename_all = "Upper Title Case")]
+    struct UserRow<'a> {
+        alias: &'a str,
+        first_name: &'a str,
+        last_name: &'a str,
+        email: &'a str,
+        #[tabled(display("format_time"))]
+        created_at: &'a jiff::Timestamp,
+        #[tabled(display("format_time"))]
+        updated_at: &'a jiff::Timestamp,
+    }
+
+    #[derive(tabled::Tabled)]
+    #[tabled(rename_all = "Upper Title Case")]
+    struct UserHostGroupRow<'a> {
+        host_group: String,
+        sudoer: &'a str,
+        security_groups: String,
+        #[tabled(display("format_time"))]
+        created_at: &'a jiff::Timestamp,
+        #[tabled(display("format_time"))]
+        updated_at: &'a jiff::Timestamp,
+    }
+
+    #[derive(tabled::Tabled)]
+    #[tabled(rename_all = "Upper Title Case")]
+    struct SshKeyRow<'a> {
+        name: &'a str,
+        #[tabled(display("display::wrap", 25))]
+        ssh_key: &'a str,
+        #[tabled(display("format_time"))]
+        created_at: &'a jiff::Timestamp,
+        #[tabled(display("format_time"))]
+        updated_at: &'a jiff::Timestamp,
+    }
+
     let user = find_user(db, alias).await?;
-    let id = user.id;
-    let table = make_table(iter::once(user));
+    let row = UserRow {
+        alias: &user.alias,
+        first_name: &user.first_name,
+        last_name: &user.last_name,
+        email: &user.email,
+        created_at: &user.created_at,
+        updated_at: &user.updated_at,
+    };
+    let mut table = Table::new(iter::once(row));
 
-    println!("{table}\n");
+    println!("{}\n", table.with(DEFAULT_TABLE_STYLE));
 
-    let keys = SshKey::filter_by_user_id(id)
+    let keys = SshKey::filter_by_user_id(user.id)
         .exec(db)
         .await
         .context("Unable to read the user's SSH keys")?;
 
-    let table = make_table(keys);
+    let mut table = Table::new(keys.iter().map(|k| SshKeyRow {
+        name: &k.name,
+        ssh_key: &k.key,
+        created_at: &k.created_at,
+        updated_at: &k.updated_at,
+    }));
 
-    println!("{table}\n");
+    println!("{}\n", table.with(DEFAULT_TABLE_STYLE));
 
-    let memberships = HostGroupUser::filter_by_user_id(id)
+    let host_group_users = HostGroupUser::filter_by_user_id(user.id)
         .exec(db)
         .await
         .context("Unable to read the user's host groups")?;
     let mut rows = Vec::<UserHostGroupRow>::new();
 
-    for host_group in &memberships {
-        let group = HostGroup::get_by_id(db, host_group.host_group_id)
+    for host_group_user in &host_group_users {
+        let group = HostGroup::get_by_id(db, host_group_user.host_group_id)
             .await
             .context("Unable to read a host group")?;
 
         rows.push(UserHostGroupRow {
             host_group: group.name.clone(),
-            sudoer: if host_group.is_sudoer { "Yes" } else { "No" },
-            created_at: &host_group.created_at,
-            updated_at: &host_group.updated_at,
+            security_groups: host_group_user
+                .security_groups
+                .iter()
+                .map(|g| g.clone())
+                .collect::<Vec<String>>()
+                .join(", "),
+            sudoer: if host_group_user.is_sudoer {
+                "Yes"
+            } else {
+                "No"
+            },
+            created_at: &host_group_user.created_at,
+            updated_at: &host_group_user.updated_at,
         });
     }
 
-    println!("{}", make_table(rows));
+    let mut table = Table::new(rows);
+
+    println!("{}", table.with(DEFAULT_TABLE_STYLE));
 
     Ok(())
 }

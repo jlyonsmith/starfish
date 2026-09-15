@@ -7,7 +7,7 @@ pub mod user;
 
 use anyhow::Context;
 use starfish_db::{Host, HostGroup, User};
-use tabled::{Table, Tabled, settings::Style};
+use tabled::settings::{Style, Theme};
 use toasty::Db;
 
 /// Finds a user by login name.
@@ -40,11 +40,10 @@ pub async fn find_host(db: &mut Db, hostname: &str) -> anyhow::Result<Host> {
         .with_context(|| format!("There is no host named '{hostname}'"))
 }
 
-/// Renders `rows` as the `list` commands' shared table: column titles over a
-/// rule, and no other decoration. Columns are sized to their contents.
-pub fn make_table<T: Tabled>(rows: impl IntoIterator<Item = T>) -> Table {
-    let mut table = Table::new(rows);
+pub const DEFAULT_TABLE_STYLE: Theme = Theme::from_style(Style::psql());
 
-    table.with(Style::psql());
-    table
+pub fn format_time(timestamp: &jiff::Timestamp) -> String {
+    let local_zoned = timestamp.to_zoned(jiff::tz::TimeZone::system());
+
+    local_zoned.strftime("%Y-%m-%d %H:%M:%S").to_string()
 }
