@@ -142,6 +142,9 @@ release OPERATION='incrPatch':
   info "Building the Linux binaries"
   just build-linux-arm64 build-linux-amd64
 
+  info "Bundling the Linux binaries"
+  just bundle TAG=$tagName
+
   info "Finished release of '"$name"' "$tagName". Run 'just publish' to draft the GitHub release."
   exit 0
 

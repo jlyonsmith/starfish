@@ -1,8 +1,8 @@
 # Starfish
 
-Starfish synchronizes user accounts from a PostgreSQL database onto Ubuntu hosts. You describe who should have an account where, and agents running on each host create the users and groups to match.
+Starfish synchronizes user accounts from a database onto Linux hosts. You describe the hosts and group them. You then you describe users and their SSH keys, and finally assign those users to host groups as sudoers and with specific Linux security group membership. Agents running on each host securely synchronize the host users to match over secure WebSockets.
 
-## How it works
+## How It Works
 
 ```mermaid
 flowchart LR
@@ -86,45 +86,15 @@ systemctl reload-or-restart starfishd
 
 Agents verify the controller against the **system trust store**. For a certificate signed by an internal CA, you can upload the CA certificate to each host and give the location of the file when prompted, and the script will install it for you. You can ignore this for public certificates or if you already have the certificate installed.  `SSL_CERT_FILE`, but this is mostly just useful for testing.
 
-### The Admin Tool
+### Configuration
 
-Briefly, a **host group** ties people to machines. Every **host** belongs to one host group, and every **user** in that host group gets an account on every host in it. Adding a user to a host group also names the **security groups** they belong to on its hosts — ordinary Linux groups, given with `--security-group` and stored on the membership itself. Users own any number of **SSH keys**, which the agent installs. Sudo is per user per host group, set with `--sudoer` on the command line and granted by membership of the `starfish-sudo` group; see [What the agent does to a host](#what-the-agent-does-to-a-host).
+A **host group** ties people to machines. Every **host** belongs to one host group, and every **user** in that host group gets an account on every host in it. Adding a user to a host group also names the **security groups** they belong to on its hosts — ordinary Linux groups, given with `--security-group` and stored on the membership itself. Users add any number of **SSH keys** and the agent installs them on the hosts in the `$HOME/.ssh` directory. Users are also made sudoers on the system by adding them to a special `starfish_sudo` group to allow the password-less sudo.  
 
-```text
-starfish-admin [-p <POSTGRES_SERVER>] [--socket <SOCKET>] <COMMAND>
+> There is not mechanism to set a users password current in Starfish.
 
-init-db                   Create the database schema
-user                      add | list | show | update | remove | add-key | remove-key
-host-group                add | list | remove | add-user | remove-user
-host                      add | list | show | update | remove | rekey
-refresh [--hostname]      Push configuration to agents now
-```
+`starfishd` reads a TOML file in `/etc/starfishd.conf`, then environment variables (if applicable) then the command line.
 
-`refresh` only talks to the controller, so it needs no database connection.
-Everything else needs no controller.
-
-`host-group add-user` is how a security group enters the configuration: a group is sent to a host because somebody in its host group is in it, and the set a host is sent is the union across the group's members. Re-running the command replaces that user's whole set, so it is also how one is taken away. The group itself must already exist on the host — Starfish never creates one — and a group nobody is left in vanishes from the configuration rather than being sent as empty, so removing the last member leaves that membership in place on the hosts.
-
-Nothing in the schema cascades, so the tool cleans up explicitly: removing a user also removes their SSH keys and memberships. Removing a host group that still has hosts is refused rather than orphaning them.
-
-### General
-
-Both daemons read a TOML file and the command line, merged with [figment](https://docs.rs/figment). The command line wins over the configuration file.
-
-#### `starfishd`
-
-Defaults to `/etc/starfishd.conf`, overridden with `--config`.
-
-| Setting | Command line | Default |
-| --- | --- | --- |
-| `sql_server` | `--sql-server` | *required* |
-| `password_file` | `--password-file` | none |
-| `listen` | `--listen` | `0.0.0.0:9600` |
-| `tls_cert` | `--tls-cert` | none, so plain `ws://` |
-| `tls_key` | `--tls-key` | none, so plain `ws://` |
-| `admin_socket` | `--admin-socket` | `/run/starfishd.sock` |
-| `admin_socket_group` | `--admin-socket-group` | none, so the socket is `0600` |
-| `log_level` | `--log-level` | `info` |
+The format of the config file is:
 
 ```toml
 sql_server = "postgresql://starfish@db.example.com:5432/starfish"
@@ -133,135 +103,39 @@ tls_cert = "/etc/starfish/server.crt"
 tls_key = "/etc/starfish/server.key"
 ```
 
-The admin socket is created mode `0600`, since a refresh makes the controller act and is not a read-only endpoint. Setting `admin_socket_group` gives it to that group at mode `0660` instead, which is how administrators with their own accounts run `starfish-admin refresh` without being root. See [Database access](#database-access).
+`starfishd` also uses a Unix socket to enable the `refresh` command to prompt connected agents to pick-up new configuration.  The socket is created mode `0600` for the owner and `0660` for `admin_socket_group` so administrators with their own accounts run `starfish-admin refresh` without having to `sudo`.
 
-#### `starfish_agent`
+> `/run` is writable only by root, and the controller deliberately is not root, so its socket lives in a systemd `RuntimeDirectory` at `/run/starfishd/starfishd.sock`. `/etc/tmpfiles.d/starfishd.conf` points `/run/starfishd.sock` at it, recreated on each boot because `/run` is emptied, so `starfish-admin` still finds the socket at its default path.
 
-Defaults to `/etc/starfish_agent.conf`, overridden with `--config`.
+`starfish_agent` reads a TOML file at `/etc/starfish_agent.conf`, then environment (if applicable) then the command line.
 
-| Setting | Command line | Default |
-| --- | --- | --- |
-| `controller_url` | `--controller-url` | *required* |
-| `agent_key` | `--agent-key` | *required* |
-| `heartbeat_secs` | `--heartbeat-secs` | `300` |
-| `helper_path` | `--helper-path` | `/usr/local/lib/starfish/starfish-sync` |
-| `no_sudo` | `--no-sudo` | `false` |
-| `log_level` | `--log-level` | `info` |
+The format of the config file is:
 
 ```toml
 controller_url = "wss://starfish.example.com:9600"
 agent_key = "r7FevxIWzpBxVHRd"
 ```
 
-The agent does not need root. `no_sudo` runs the helper directly for an agent that already is root, which is really only useful when testing.
+The agent does not need root.  It runs in an unprivileged `starfish` account. It uses a helper running as `root` that takes no command line arguments, and is fed data via stdin to actually make changes. A lot of configuration work is done by the install script to sandbox the both the agent and its helper.
 
-## Security
-
-### The controller's admin socket
-
-`/run` is writable only by root, and the controller deliberately is not root, so its socket lives in a systemd `RuntimeDirectory` at `/run/starfishd/starfishd.sock`. `/etc/tmpfiles.d/starfishd.conf` points
-`/run/starfishd.sock` at it, recreated on each boot because `/run` is emptied, so `starfish-admin` still finds the socket at its default path.
-
-Setting `admin_socket_group` also needs the controller's own account to be in that group: it hands the socket over with `chown`, and the kernel only allows that for a group the process actually belongs to. The installer writes that as a `SupplementaryGroups=` drop-in. Without it the controller starts, fails on the socket, and restarts forever.
-
-### The Agent
-
-The agent runs as an unprivileged `starfish` account. Everything that changes the host happens in `starfish-sync`, a separate binary the agent starts through `sudo`, writing the configuration to its standard input and reading the report back from its standard output.
-
-The point of the split is the sudoers file, which is one line:
-
-```text
-starfish ALL=(root) NOPASSWD: /usr/local/lib/starfish/starfish-sync
-```
-
-The helper takes no arguments, so there is nothing to glob and nothing to negate. All the policy lives in Rust running as root, where the agent cannot reach it.
-
-### Why not just allowlist the commands
-
-Allowlisting `useradd`, `usermod`, `gpasswd`, `chown` and `chmod` looks like the obvious approach and gives away root:
-
-```sh
-sudo chown starfish /etc/shadow          # read and rewrite every password hash
-sudo chmod 666 /etc/sudoers              # rewrite the policy itself
-sudo useradd -o -u 0 -g 0 backdoor       # a second uid 0 account
-sudo usermod -aG sudo starfish           # the agent user becomes a full sudoer
-```
-
-Pinning the arguments does not rescue it. sudoers matches with `fnmatch` globs, its own manual says arguments cannot be reliably negated, and the legitimate arguments here are arbitrary user and group names, so wildcards are unavoidable. Even a perfectly scoped `gpasswd --add <user> <group>` still permits `gpasswd --add starfish sudo`.
-
-### What the helper enforces
-
-Because it runs as root, the helper is the last place a bad configuration can be stopped, and it does not assume anything upstream has checked:
-
-- User and group names must match `[a-z_][a-z0-9_-]{0,31}`. A name starting with `-` would otherwise be read as an option, and `useradd -o` is a very different command from `useradd ada`.
-- Accounts with a uid below 1000 belong to the distribution and are refused outright, so no configuration can reach into `root` or `daemon`.
-- A full name may not contain a colon or a newline, either of which would corrupt `/etc/passwd`.
-- Key files are only ever written under the home directory `getent passwd` reports for that exact user, and only if it is an absolute path.
-
-Each check fails just that user or group, reported back to the controller with a reason. A bad entry never stops the rest of the host being configured.
-
-### What this does and does not buy you
-
-It contains the agent. The agent is the part that terminates TLS and decodes messages from the network, and a bug there is now not arbitrary root command execution.
-
-It does not contain the controller. A controller that can say "create user X with sudo" can say that about an attacker, so **the controller, its database, and anyone with `starfish-admin` access are root-equivalent across the whole fleet**, by design. [Database access](#database-access) covers how far that can be narrowed; closing it completely would need agents to verify a signature the
-controller cannot produce.
-
-Two deployment details that the split depends on:
-
-- `/usr/local/lib/starfish/starfish-sync` and every directory above it must be root-owned and not writable by `starfish`, or the agent can replace the binary root is about to run.
-- **How far the agent's unit can be sandboxed is limited by the split itself.** `sudo` starts the helper as a child of the unit, so it inherits that mount namespace. `ProtectSystem=strict` leaves `/etc` read-only and `useradd` cannot lock `/etc/passwd`; `ProtectHome=yes` hides `/home` and `authorized_keys` cannot be written; `NoNewPrivileges=yes` stops `sudo` outright. All three fail at the point of applying a configuration rather than at startup, so the unit looks healthy while the host is never configured. `deploy/starfish-agent.service` therefore settles for `ProtectSystem=yes`, and `just test-systemd` pins all three so a well meaning tightening cannot slip through.  Confining the agent properly would mean not starting the helper from inside its unit at all: run `starfish-sync` as its own root service behind a socket and have the agent talk to it. That is just more moving parts for the same privilege boundary.
-
-### Database access
-
-The database is the real security boundary. Anyone who can write to it can add a user with `is_sudoer` set and own every host in that host group on the next sync. `starfish-admin` is a convenience layer over SQL, not a boundary — anyone holding the credentials can use `psql` instead — so the controls belong in PostgreSQL.
-
-### Least privilege roles
-
-`deploy/roles.sql` sets up three roles. The important one is the controller:
-
-```sql
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO starfishd;
-GRANT UPDATE (contacted_at, next_heartbeat_at, updated_at) ON hosts TO starfishd;
-```
-
-That is everything the controller does to the database. (`updated_at` is in the list because the schema marks it `#[auto]`, so every write touches it; it is a timestamp, not an access decision.) It is the network facing component, so it is worth pinning down: a compromised controller cannot persist a change to who has access. It can still send agents whatever it likes over a live connection, since agents trust it unconditionally — this limits persistence, not a live compromise.
-
-The other two are an owner that owns the tables, so neither runtime role can `DROP` or `ALTER` them, and a `starfish_admins` group role holding the write grants. Give each administrator their own login in that group; a shared account makes any later audit trail worthless.
-
-Run it after the schema exists, because the grants only reach tables that are already there:
-
-```sh
-createdb starfish
-starfish-admin -p postgresql://starfish_owner@db/starfish \
-    --password-file /etc/starfish/owner.password init-db
-psql -d starfish -f deploy/roles.sql \
-    -v db_name=starfish \
-    -v owner_password='...' -v controller_password='...'
-```
-
-Passing no password for a role leaves whatever it already has alone, which is what a peer authenticated deployment wants. Every statement in the file converges rather than failing on what already exists, so it can be re-run. `scripts/install-controller.sh` does all of the above.
-
-Each administrator then gets their own login role in the group, created by a superuser on the database host:
+Note, anyone who can write to the database can add a sudo user to any host with an agent. The install script locks down the database using several roles. You can add controller users to the `starfish_admins` group role. Give each administrator their own login that matches their controller login, which gives them Unix socket peer access to the database:
 
 ```sh
 sudo -u postgres psql -d starfish \
-    -c 'CREATE ROLE jls LOGIN IN ROLE starfish_admins'
+    -c 'CREATE ROLE <user-name> LOGIN IN ROLE starfish_admins'
 ```
 
-Name the role after their Linux account and `peer` authentication over the socket recognises them, so there is no password to distribute at all:
+Then they can do operations using this URL:
 
 ```sh
 starfish-admin -p 'postgresql:///starfish?host=/var/run/postgresql' user list
 ```
 
-The socket directory goes in the `host` query parameter; a percent encoded socket path where the host name belongs is *not* understood, and fails as a DNS lookup. Set `STARFISH_SQL_SERVER` to that URL rather than retyping it. Administrators working from another machine need a password each instead, as below. `install-controller.sh` prints whichever of the two matches the deployment it just configured.
+Set `STARFISH_SQL_SERVER` to that URL rather than retyping it. 
 
-This has nothing to do with the Unix group behind `--admin-group`. That group governs only `starfish-admin refresh`, which is the one command that talks to the controller rather than the database.
+You can give administrators working from another machine need a password each instead if you need too. A password in the connection URL is visible in `ps` output to every user on the machine, and goes to\ shell history. All tools take `--password-file` instead, which must be mode `0600`. `starfish-admin` also reads `STARFISH_PASSWORD_FILE`, and takes the server URL from `STARFISH_SQL_SERVER`.
 
-### Passwords
-
-A password in the connection URL is visible in `ps` output to every user on the machine, and lands in shell history. Both tools take `--password-file` instead, which must be mode `0600` — a file anyone else can read is refused rather than quietly accepted. `starfish-admin` also reads `STARFISH_PASSWORD_FILE`, and takes the server URL from `STARFISH_SQL_SERVER`.
+To set a password, do the following:
 
 ```sh
 install -m 0600 /dev/null /etc/starfish/db.password
@@ -271,53 +145,33 @@ starfishd --sql-server postgresql://starfishd@db.example.com/starfish \
     --password-file /etc/starfish/db.password
 ```
 
-Neither tool ever prints a connection URL without redacting the password first.
-
-Better still, if the tool runs on the database host: a Unix socket with `peer` authentication in `pg_hba.conf`. The operating system user *is* the database role, so there is no password to leak, and you get per-person attribution for free.
-
-### Transport
-
-`sslmode` defaults to `prefer`, which uses TLS when the server offers it but accepts plaintext and never checks who it is talking to. Ask for verification explicitly:
+PostgreSQL `sslmode` defaults to `prefer`, which uses TLS when the server offers it but accepts plaintext and never checks who it is talking to. You can ask for verification explicitly with:
 
 ```url
 postgresql://starfishd@db.example.com/starfish?sslmode=verify-full&sslrootcert=system
 ```
 
-`sslrootcert` is **required** with `verify-ca` and `verify-full` — the driver does not fall back to `~/.postgresql/root.crt`. Use `system` for the operating system trust store, or a path for an internal CA. Both tools warn at startup when connecting to a non-local host without verification.
+`sslrootcert` is **required** with `verify-ca` and `verify-full` — the driver does not fall back to `~/.postgresql/root.crt`. Use `system` for the operating system trust store, or a path for an internal CA. Pair it with `hostssl ... scram-sha-256` entries in `pg_hba.conf`, restricted to the addresses the controller and administrators connect from.
 
-Pair it with `hostssl ... scram-sha-256` entries in `pg_hba.conf`, restricted to the addresses the controller and administrators connect from.
-
-### Administrators without root
-
-With per-person logins, administrators are no longer the user the controller runs as, so the `0600` admin socket puts `starfish-admin refresh` out of reach. Give the socket to a group they belong to:
+To do `refresh` you need to also add the user to the local `starfish-admins` group:
 
 ```sh
 groupadd --system starfish-admins
-usermod -aG starfish-admins jls
+usermod -aG starfish-admins <USER>
 
-starfishd ... --admin-socket-group starfish-admins   # socket becomes 0660
+starfishd ... --admin-socket-group starfish-admins
 ```
 
-The controller refuses to start if the group does not exist, rather than falling back to something more open.
-
-### What the agent does to a host
-
-Synchronizing is deliberately additive, with one exception. Worth knowing before you point it at a live machine:
+Synchronizing is deliberately additive, with one exception:
 
 - **Groups are never created or deleted.** They are administered outside Starfish and are expected to exist on the host already; the agent only moves users in and out of them. A group in the configuration that the host does not have is reported as *missing* and logged as a warning by both the agent and the controller, naming the users who are going without the access it was meant to give them — it is not a failure, and everything else in the configuration is still applied.
 - **Users are created, never deleted.** A user removed from the database keeps their account; the agent stops managing it. Removing accounts is a manual decision.
 - **Group membership is removed**, but only for groups the controller sent. A user in `docker` keeps `docker` even though Starfish knows nothing about it. This is the only way to revoke access, which is why it is the exception.
-- **Sudo is membership of the `starfish-sudo` group**, granted and revoked like any other managed group rather than through a per-user `sudoers.d` file. That group, not Ubuntu's own `sudo`, because managed accounts have **no password at all** — people authenticate with an SSH key — and so could never answer the prompt that the stock `%sudo ALL=(ALL:ALL) ALL` rule demands. `deploy/starfish-sudoers` gives `starfish-sudo` a `NOPASSWD` rule instead, which the agent installer puts in `/etc/sudoers.d/starfish-sudo`. Keeping it off `sudo` means granting passwordless root to the accounts Starfish manages cannot quietly change what a local administrator already in `sudo` has to do. `scripts/install-agent.sh` creates the group alongside that rule, because a sync never creates one; if it is missing, `--sudoer` grants nothing and says so in the log.
-- **`~/.ssh/authorized_keys` is owned outright.** The agent writes a header and exactly the keys in the database, so local edits are overwritten. A user with no keys in the database ends up with a file containing only the header, and loses key based access — populate `ssh_keys` before rolling agents out.
+- **Sudo is membership of the `starfish-sudo` group**, granted and revoked like any other managed group rather than through a per-user `sudoers.d` file. That group, not Ubuntu's own `sudo`, because managed accounts have **no password at all** — people authenticate with an SSH key — and so could never answer the prompt that the stock `%sudo ALL=(ALL:ALL) ALL` rule demands. `deploy/starfish-sudoers` gives `starfish-sudo` a `NOPASSWD` rule instead. `scripts/install-agent.sh` creates the group. If it is missing, `--sudoer` grants nothing and says so in the log.
+- **`~/.ssh/authorized_keys` is owned outright.** The agent writes a header and exactly the keys in the database, so local edits are overwritten. A user with no keys in the database ends up with a file containing only the header, and loses key based access, so populate `ssh_keys` before rolling agents out.
 - New users are created with `--create-home` and `/bin/bash`, and **no password**. The account is usable over SSH with a key and cannot be logged into with a password at all.
 
-Everything goes through standard Ubuntu tools: `useradd`, `usermod`, `gpasswd`, `getent` and `id` — no `groupadd` or `groupdel`, which the agent has no way to reach. Group membership uses `gpasswd`, not `usermod --groups`, because the latter replaces a user's whole supplementary list and would silently drop unmanaged groups.
-
-These all run in `starfish-sync`, not in the agent.
-
-Every group and user is attempted independently, and each is reported back as created, updated, unchanged, missing or failed with a message. One broken account never blocks anybody else's access.
-
-### Connections and health
+`starfish-sync` runs standard Ubuntu tools: `useradd`, `usermod`, `gpasswd`, `getent` and `id` — no `groupadd` or `groupdel`, which the agent has no way to reach. Group membership uses `gpasswd`, not `usermod --groups`, because the latter replaces a user's whole supplementary list and would silently drop unmanaged groups.
 
 Agents authenticate with a 16 character alphanumeric key generated by `host add`. Show it again with `host show`, or replace it with `host rekey`, after which that host's agent cannot reconnect until its configuration is updated.
 
@@ -325,9 +179,15 @@ Each heartbeat tells the controller when to expect the next one. The controller 
 
 A disconnected agent reconnects with a backoff that doubles from 1 to 60 seconds. When the controller rejects its key the backoff keeps growing rather than resetting, so a misconfigured host does not hammer the controller — but it does keep trying, so fixing the database is enough to bring it back without logging into the host.
 
-### Development
+## Development
 
 If you are developing Starfish, this is a breakdown of the steps you'll need to take:
+
+```sh
+brew install sd colima docker
+```
+
+Install Rust with `rustup`.  `clone` the repo. Configure a `colima` VM.  Then:
 
 ```sh
 cargo build --release       # binaries land in target/release
@@ -384,11 +244,9 @@ starfish-admin refresh                     # every host
 starfish-admin refresh --hostname web-1    # just one
 ```
 
-Without a refresh, hosts pick changes up the next time their agent connects.
-
 ### Testing
 
-Most of the test suite needs nothing external — `starfish_sync` is tested against a fake host, so the synchronization logic, the validation and the wire handling all run anywhere, including macOS. Two suites need more, and both skip unless asked for:
+Most of the test suite needs nothing external — `starfish_sync` is tested against a fake host, so the synchronization logic, the validation and the wire handling all run anywhere, including macOS.
 
 ```sh
 just test           # everything that needs nothing external
