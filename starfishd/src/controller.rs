@@ -138,6 +138,7 @@ impl Controller {
                 ssh_keys.sort_by(|a, b| a.name.cmp(&b.name));
 
                 UserAccount {
+                    id: user.id,
                     full_name: format!("{} {}", user.first_name, user.last_name),
                     is_sudoer: is_sudoer.get(&user.id).copied().unwrap_or(false),
                     name: user.alias,

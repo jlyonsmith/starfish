@@ -96,7 +96,19 @@ pub struct Group {
 /// A user the agent should create on the host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserAccount {
-    /// The login name, which is the user's alias in the database.
+    /// The database's identifier for this user, and the only part of an
+    /// account that never changes.
+    ///
+    /// The agent writes it into the host's `GECOS` field so that an account
+    /// can still be recognised after its login name has been changed, and so
+    /// that an account belonging to a user who has gone away can be told from
+    /// one Starfish never created. A login name cannot do either job: it is
+    /// exactly the thing that changes.
+    pub id: u64,
+
+    /// The login name, which is the user's alias in the database. Unlike
+    /// [`UserAccount::id`] this may change, and the agent renames the host's
+    /// account to follow it.
     pub name: String,
 
     /// The user's full name, used for the GECOS field.
@@ -154,6 +166,14 @@ pub enum Status {
     /// The user did not exist and was added. Groups are never created, so this
     /// never appears for one.
     Created,
+
+    /// The account existed on the host, carried Starfish's `GECOS` tag, and
+    /// belonged to a user the configuration no longer has, so it was deleted
+    /// along with its home directory. Users only: a group is never removed.
+    ///
+    /// The name is the login the account had on the host, which is not
+    /// necessarily one the configuration ever mentioned.
+    Removed,
 
     /// The group or user existed but had to be changed.
     Updated,

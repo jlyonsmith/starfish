@@ -33,6 +33,12 @@ enum Outcome {
 
 pub struct Agent {
     config: AgentConfig,
+
+    /// This host's own name, read once at startup because it does not change
+    /// while the agent runs. `None` when it could not be read at all, which
+    /// is not fatal -- the controller identifies the host by its agent key --
+    /// but does mean there is nothing to compare the controller's name with.
+    hostname: Option<String>,
 }
 
 impl Agent {
@@ -47,6 +53,7 @@ impl Agent {
 
         Agent {
             config: config.clone(),
+            hostname: hostname(),
         }
     }
 
@@ -141,14 +148,15 @@ impl Agent {
 
         log::info!("Connected to {url}");
 
-        let hostname = hostname();
-
         send(
             &mut ws,
             &AgentMsg::Hello(Hello {
                 protocol_version: starfish_msg::PROTOCOL_VERSION,
                 agent_key: self.config.agent_key.clone(),
-                hostname: hostname.clone(),
+                hostname: self
+                    .hostname
+                    .clone()
+                    .unwrap_or_else(|| UNKNOWN_HOSTNAME.to_string()),
                 agent_version: env!("CARGO_PKG_VERSION").to_string(),
             }),
         )
@@ -262,6 +270,21 @@ impl Agent {
             config.groups.len(),
             config.users.len()
         );
+
+        // The configuration is applied either way: the agent key, not the
+        // name, says which host this is, so a mismatch is stale data rather
+        // than a configuration meant for somebody else. The controller logs
+        // the same mismatch when the agent introduces itself, but only
+        // whoever is on this host can see which of the two names is right.
+        if let Some(hostname) = &self.hostname
+            && config.hostname != *hostname
+        {
+            log::warn!(
+                "The controller knows this host as '{}', but its name here is '{hostname}'. \
+                 Applying the configuration anyway -- the database is probably out of date.",
+                config.hostname
+            );
+        }
 
         let command = self.config.sync_command();
         let bytes = starfish_msg::to_vec(&config).context("Unable to encode the configuration")?;
@@ -387,9 +410,14 @@ async fn send(ws: &mut Socket, msg: &AgentMsg) -> anyhow::Result<()> {
         .context("Unable to send to the controller")
 }
 
-/// This host's name, for the controller's logs. The controller identifies the
-/// host by its agent key, so a name it cannot read is not fatal.
-fn hostname() -> String {
+/// What the agent calls itself when it cannot read the host's name.
+const UNKNOWN_HOSTNAME: &str = "unknown";
+
+/// This host's name, for the controller's logs and for comparing with the name
+/// the database has. The controller identifies the host by its agent key, so a
+/// name that cannot be read is not fatal; it is `None` rather than a
+/// placeholder so it is never reported as a mismatch.
+fn hostname() -> Option<String> {
     duct::cmd!("hostname")
         .stdout_capture()
         .stderr_capture()
@@ -399,5 +427,4 @@ fn hostname() -> String {
         .filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
         .filter(|hostname| !hostname.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
 }

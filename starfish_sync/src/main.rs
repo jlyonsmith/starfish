@@ -75,6 +75,7 @@ mod tests {
                 name: "developers".to_string(),
             }],
             users: vec![UserAccount {
+                id: 1,
                 name: "ada".to_string(),
                 full_name: "Ada Lovelace".to_string(),
                 email: "ada@example.com".to_string(),

@@ -30,6 +30,19 @@ const HELPER: &str = "/usr/local/lib/starfish/starfish-sync";
 /// if the two ever drift.
 const SUDO_GROUP: &str = "starfish-sudo";
 
+/// Mirrors `system::MANAGED_TAG`, repeated here for the same reason.
+const MANAGED_TAG: &str = "STARFISH";
+
+/// The database ids the users below have. Arbitrary, except that they differ:
+/// the id, not the login name, is what an account is recognised by.
+const ADA_ID: u64 = 42;
+const LOCAL_DEV_ID: u64 = 99;
+
+/// Mirrors `system::gecos`: the whole `GECOS` field a managed account has.
+fn gecos(full_name: &str, id: u64) -> String {
+    format!("{full_name},,,,{MANAGED_TAG}-{id}")
+}
+
 /// A container that removes itself, so a failing assertion does not leave one
 /// running.
 struct Container {
@@ -162,6 +175,10 @@ impl Container {
             .collect()
     }
 
+    fn exists(&self, path: &str) -> bool {
+        self.try_exec(None, &["test", "-e", path], &[]).0.success()
+    }
+
     /// Owner and mode of a path, as `user:group mode`.
     fn stat(&self, path: &str) -> String {
         self.exec(&["stat", "-c", "%U:%G %a", path])
@@ -194,6 +211,7 @@ fn config(groups: &[&str], users: Vec<UserAccount>) -> HostConfig {
 
 fn ada(groups: &[&str], is_sudoer: bool) -> UserAccount {
     UserAccount {
+        id: ADA_ID,
         name: "ada".to_string(),
         full_name: "Ada Lovelace".to_string(),
         email: "ada@example.com".to_string(),
@@ -203,6 +221,20 @@ fn ada(groups: &[&str], is_sudoer: bool) -> UserAccount {
             name: "laptop".to_string(),
             key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5-ada-laptop ada@laptop".to_string(),
         }],
+    }
+}
+
+/// A user with no keys, for the accounts whose point is whether they exist at
+/// all rather than who can log into them.
+fn account(id: u64, name: &str, full_name: &str) -> UserAccount {
+    UserAccount {
+        id,
+        name: name.to_string(),
+        full_name: full_name.to_string(),
+        email: format!("{name}@example.com"),
+        is_sudoer: false,
+        groups: vec![],
+        ssh_keys: vec![],
     }
 }
 
@@ -265,7 +297,13 @@ fn synchronizes_a_real_ubuntu_host() {
 
     let passwd = host.passwd("ada").expect("ada was not created");
 
-    assert_eq!(passwd[4], "Ada Lovelace", "the GECOS field is wrong");
+    // The tag in the last GECOS field is what every later sync recognises the
+    // account by, and the full name still has the first field to itself.
+    assert_eq!(
+        passwd[4],
+        gecos("Ada Lovelace", ADA_ID),
+        "the GECOS field is wrong"
+    );
     assert_eq!(passwd[5], "/home/ada");
     assert_eq!(passwd[6], "/bin/bash");
     assert!(
@@ -369,7 +407,10 @@ fn synchronizes_a_real_ubuntu_host() {
     renamed.users[0].full_name = "Ada A. Lovelace".to_string();
 
     assert_eq!(status(&host.sync(&renamed), "ada"), Status::Updated);
-    assert_eq!(host.passwd("ada").unwrap()[4], "Ada A. Lovelace");
+    assert_eq!(
+        host.passwd("ada").unwrap()[4],
+        gecos("Ada A. Lovelace", ADA_ID)
+    );
 
     // --- a group deleted on the host while a user was in it -----------------
     // `groupdel` takes the memberships with it, so the next sync finds ada out
@@ -389,7 +430,10 @@ fn synchronizes_a_real_ubuntu_host() {
         "the deleted group was recreated"
     );
     // The rest of the account is untouched by its group going missing.
-    assert_eq!(host.passwd("ada").unwrap()[4], "Ada A. Lovelace");
+    assert_eq!(
+        host.passwd("ada").unwrap()[4],
+        gecos("Ada A. Lovelace", ADA_ID)
+    );
     assert!(
         host.exec(&["cat", "/home/ada/.ssh/authorized_keys"])
             .contains("ada-laptop")
@@ -409,6 +453,10 @@ fn synchronizes_a_real_ubuntu_host() {
     let before = host.passwd("daemon").expect("daemon should exist");
     let mut system = ada(&[], true);
 
+    // A user of its own rather than ada's id, so this exercises a
+    // configuration reaching for a system account and not a rename onto one,
+    // which is refused a little further down.
+    system.id = 7;
     system.name = "daemon".to_string();
 
     let report = host.sync(&config(&[], vec![system]));
@@ -440,6 +488,120 @@ fn synchronizes_a_real_ubuntu_host() {
         root_accounts.split_whitespace().collect::<Vec<_>>(),
         vec!["root"],
         "something else acquired uid 0"
+    );
+
+    // --- an untagged account is adopted, an unmentioned one is left alone ----
+    // Every account on a host upgraded to a tagging agent looks like
+    // `localdev`: made by Starfish, but before there was a tag to put on it.
+    // `localadmin` is the other case entirely — somebody's own account, which
+    // no configuration names and nothing here may touch.
+    host.exec(&[
+        "useradd",
+        "--create-home",
+        "--comment",
+        "Local Developer",
+        "localdev",
+    ]);
+    host.exec(&[
+        "useradd",
+        "--create-home",
+        "--comment",
+        "Local Admin",
+        "localadmin",
+    ]);
+
+    let mut adopted = base.clone();
+
+    adopted
+        .users
+        .push(account(LOCAL_DEV_ID, "localdev", "Local Developer"));
+
+    let report = host.sync(&adopted);
+
+    assert_eq!(status(&report, "localdev"), Status::Updated);
+    assert_eq!(
+        host.passwd("localdev").unwrap()[4],
+        gecos("Local Developer", LOCAL_DEV_ID),
+        "an existing account was not adopted"
+    );
+    assert_eq!(
+        host.passwd("localadmin").unwrap()[4],
+        "Local Admin",
+        "an account no configuration names was tagged"
+    );
+
+    // --- a changed alias renames the account rather than rebuilding it -------
+    // This is the whole reason the tag carries an id. `ada` becomes `adalove`
+    // in the database, and the account has to follow it with its uid and its
+    // home directory intact, not be deleted and made again.
+    let before = host.passwd("ada").expect("ada should exist");
+
+    let mut realiased = adopted.clone();
+
+    realiased.users[0].name = "adalove".to_string();
+
+    let report = host.sync(&realiased);
+
+    assert_eq!(status(&report, "adalove"), Status::Updated);
+    assert!(
+        host.passwd("ada").is_none(),
+        "the account is still under its old login name"
+    );
+
+    let after = host.passwd("adalove").expect("the account was not renamed");
+
+    assert_eq!(
+        after[2], before[2],
+        "the uid changed, so this was a rebuild"
+    );
+    assert_eq!(after[5], "/home/adalove", "the home directory did not move");
+    // `base`, which this was built from, carries the original full name, so the
+    // tag is the only part of the GECOS that had to survive the rename.
+    assert_eq!(after[4], gecos("Ada Lovelace", ADA_ID));
+    assert!(!host.exists("/home/ada"), "the old home was left behind");
+
+    // The keys moved with the home directory, so the rename did not lock
+    // anybody out of a host they still have access to.
+    assert!(
+        host.exec(&["cat", "/home/adalove/.ssh/authorized_keys"])
+            .contains("ada-laptop"),
+        "the key file did not survive the rename"
+    );
+
+    // The account's private group keeps the name the login had when it was
+    // created: renaming it would mean administering a group, which this helper
+    // deliberately cannot do. Nothing depends on the two names matching,
+    // because the key file is chowned to the login group rather than to a
+    // group assumed to be named after the user.
+    let login_group = host.exec(&["id", "--name", "--group", "adalove"]);
+
+    assert_eq!(
+        host.stat("/home/adalove/.ssh/authorized_keys"),
+        format!("adalove:{} 600", login_group.trim())
+    );
+
+    // --- a user who leaves the configuration loses the account --------------
+    let report = host.sync(&config(&["developers", "deploy"], vec![]));
+
+    assert_eq!(status(&report, "adalove"), Status::Removed);
+    assert_eq!(status(&report, "localdev"), Status::Removed);
+    assert!(host.passwd("adalove").is_none());
+    assert!(host.passwd("localdev").is_none());
+    assert!(
+        !host.exists("/home/adalove") && !host.exists("/home/localdev"),
+        "a removed account kept its home directory"
+    );
+
+    // ...but an account Starfish never created is none of its business, however
+    // little the configuration says about it.
+    assert!(
+        host.passwd("localadmin").is_some() && host.exists("/home/localadmin"),
+        "an account without the tag was removed"
+    );
+    assert!(
+        report.users.iter().all(|item| item.name != "localadmin"),
+        "an unmanaged account was reported on: {:?}",
+        report.users
     );
 
     // --- the sudoers rule from deploy/ actually works ------------------------

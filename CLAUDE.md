@@ -71,9 +71,10 @@ starfish_admin ──writes──> PostgreSQL <──reads── starfishd ─�
 - **`starfish_msg`** — the wire protocol, shared by everything else. Encoded as MessagePack
   with `to_vec_named`, so **fields are matched by name and adding one does not break an
   older peer** — but a new *enum variant* does, which is what took `PROTOCOL_VERSION` to 2
-  when `Status::Missing` was added. WebSockets frame messages themselves; the Unix socket
-  does not, so `frame::{read,write}` add a big-endian `u32` length prefix. `PROTOCOL_VERSION` is checked
-  against the agent's `Hello`.
+  when `Status::Missing` was added and to 3 for `Status::Removed`. `UserAccount::id`, added
+  alongside it, is only a field and would not have needed a bump on its own. WebSockets
+  frame messages themselves; the Unix socket does not, so `frame::{read,write}` add a
+  big-endian `u32` length prefix. `PROTOCOL_VERSION` is checked against the agent's `Hello`.
 - **`starfishd`** — the controller. `controller.rs` holds shared state (db handle, registry,
   generation counter); `agent_registry.rs` maps host id to a connected agent's `mpsc` sender
   and uses `SessionId` so a stale session cannot evict its replacement; `agent_session.rs`
@@ -94,12 +95,36 @@ starfish_admin ──writes──> PostgreSQL <──reads── starfishd ─�
   `starfish_sync`; the sudoers rule is one line with no arguments to glob. Never move a
   decision about *what* to change into the agent, and never give the helper command-line
   arguments — that is what makes the rule safe. `validate.rs` re-checks everything
-  (name charset, uid ≥ 1000, no colon or newline in a full name, key paths under the home
-  `getent` reports) because it cannot assume the controller or database is trustworthy.
-- **Syncing is additive except for group membership.** Users are created, never deleted.
-  Membership is removed only for groups the controller sent, plus `SUDO_GROUP` — that set
-  is built in `sync::sync` and is the only revocation path. `authorized_keys` is owned
-  outright and overwritten.
+  (name charset, uid ≥ 1000, none of `:` `,` `=` or a newline in a full name — the set
+  `shadow` itself refuses — key paths under the home `getent` reports) because it cannot
+  assume the controller or database is trustworthy.
+- **`system::MANAGED_TAG` decides what a host will let Starfish change.** Every account it
+  creates carries `STARFISH-<db user id>` in the last comma separated field of its `GECOS`
+  (`system::gecos` writes it, `system::tagged_id` reads it back). A hyphen, not a colon,
+  because `shadow` refuses `:`, `,` and `=` in a `GECOS` field — which is also why the
+  field is written with `chfn`, one sub-field at a time, and never with
+  `usermod --comment`, which cannot write the comma in front of the tag. `create_user`
+  therefore runs `useradd --comment <full name>` and then tags separately; a failure
+  between the two leaves an untagged account, which the next sync adopts.
+- **Syncing is additive except for group membership and untagged accounts.** Within the
+  tagged set the host is made to match: `sync::sync` deletes, with `userdel --remove`, every
+  tagged account whose id the configuration no longer carries. Outside it nothing is
+  touched. Membership is removed only for groups the controller sent, plus `SUDO_GROUP` —
+  that set is built in `sync::sync` and is the only revocation path. `authorized_keys` is
+  owned outright and overwritten.
+- **A changed alias is a rename, never a delete and a create.** `sync::rename_if_needed`
+  finds the account by the id in its tag and runs `usermod --login`, so a uid and a home
+  directory survive an alias change. The account's private group keeps the *old* name —
+  renaming it would need a `groupmod`, which the previous invariant rules out — which is
+  why `set_authorized_keys` chowns to `<user>:` and not `<user>:<user>`.
+- **An untagged account the configuration names is adopted, not refused.** Otherwise an
+  agent upgraded onto a host whose accounts all predate tagging would stop managing every
+  one of them. The cost is that an unrelated local account sharing a configured alias is
+  taken over, so `sync_user` warns by name every time it adopts one. An untagged account
+  nothing names is never touched, and never appears in the report.
+- **`managed_users()` failing must not delete anything.** `sync::sync` warns and carries on
+  with an empty list, which degrades to the old additive behaviour rather than concluding
+  that every account has gone.
 - **Groups are not Starfish's to create.** They are administered outside it and expected to
   exist on the host already; `sync::sync` only moves users in and out. There is deliberately
   no `create_group` on the `System` trait — the capability is absent, not merely unused, so
@@ -132,12 +157,16 @@ starfish_admin ──writes──> PostgreSQL <──reads── starfishd ─�
   set instead would strand the old grant forever, because Starfish never removes anybody
   from a group it does not manage.
 - **Host changes go through `system::System`.** The `Ubuntu` implementation shells out to
-  `useradd`, `usermod`, `gpasswd`, `getent` and `id` (`gpasswd`, never `usermod --groups`,
-  which would drop unmanaged groups). The trait exists so `sync.rs` can be tested against
-  `FakeSystem` on macOS; keep new host operations behind it.
+  `useradd`, `usermod`, `userdel`, `chfn`, `gpasswd`, `getent` and `id` (`gpasswd`, never
+  `usermod --groups`, which would drop unmanaged groups). The trait exists so `sync.rs` can
+  be tested against `FakeSystem` on macOS; keep new host operations behind it. `FakeSystem`
+  cannot catch what `shadow` refuses to write, which is what `just test-ubuntu` is for.
 - **Every user and group is attempted independently** and reported as
-  `Created`/`Updated`/`Unchanged`/`Missing`/`Failed`. One bad entry must never abort the
-  rest. `Missing` is groups only, and `Created` is users only.
+  `Created`/`Updated`/`Unchanged`/`Removed`/`Missing`/`Failed`. One bad entry must never
+  abort the rest. `Missing` is groups only; `Created` and `Removed` are users only. A
+  `Removed` entry is named for the login the *host* had, which the configuration may never
+  have mentioned. `starfishd::agent_session::log_sync_report` warns on every one, the way
+  it does for `Missing`.
 - **The generation counter** is seeded from the wall clock so an agent reconnecting after a
   controller restart never sees a configuration numbered below what it already applied.
 - **The controller's database grants are `SELECT` plus `UPDATE` on three `hosts` columns**

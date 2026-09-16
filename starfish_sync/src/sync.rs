@@ -1,9 +1,17 @@
 //! Bringing the host in line with the configuration the controller sent.
 //!
-//! Synchronizing is additive by design: users that are missing get created, but
-//! nothing the controller did not mention is ever removed. The one thing that
-//! is taken away is membership of a group the controller *did* send, because
-//! that is the only way to revoke access.
+//! What Starfish will change on a host is decided by
+//! [`MANAGED_TAG`](crate::system::MANAGED_TAG), which every account it creates
+//! carries in its `GECOS` field along with the database's id for the user.
+//! Within that set the host is made to match the configuration exactly: an
+//! account whose user is no longer in the configuration is deleted, and one
+//! whose login name has changed is renamed rather than deleted and rebuilt, so
+//! that a uid and a home directory survive a change of alias. Outside it,
+//! nothing is touched: an account with no tag is somebody else's.
+//!
+//! Group membership is the one thing revoked without a tag to go on, and only
+//! for groups the controller sent, because that is the only way to take access
+//! away from an account that stays.
 //!
 //! Groups themselves are not Starfish's to manage. They are expected to exist
 //! on the host already, put there by whatever administers the host's groups,
@@ -12,10 +20,10 @@
 //! [`Status::Missing`] and warned about, never created — and so is
 //! [`SUDO_GROUP`], which `scripts/install-agent.sh` creates at install time.
 
-use crate::system::{LEGACY_SUDO_GROUP, SUDO_GROUP, System};
+use crate::system::{LEGACY_SUDO_GROUP, ManagedUser, SUDO_GROUP, System, gecos, tagged_id, warn};
 use crate::validate;
 use starfish_msg::{HostConfig, ItemReport, Status, SyncReport, UserAccount};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Written at the top of every `authorized_keys` the agent manages.
 const AUTHORIZED_KEYS_HEADER: &str =
@@ -71,14 +79,56 @@ pub fn sync(system: &dyn System, config: &HostConfig) -> SyncReport {
     // revocation could reach.
     managed.insert(LEGACY_SUDO_GROUP);
 
-    let users = config
+    // What Starfish has already put on this host, taken once, before anything
+    // is renamed out from under it. Failing to read it must not stop the rest:
+    // the additive half of a sync does not need it, so the sync degrades to
+    // what it would have done before tagging existed rather than doing nothing
+    // at all — but nothing is deleted on the strength of an empty list.
+    let existing = match system.managed_users() {
+        Ok(existing) => existing,
+        Err(err) => {
+            warn(&format!(
+                "Unable to read this host's accounts, so no account will be \
+                 renamed or removed on this pass: {err:#}"
+            ));
+
+            Vec::new()
+        }
+    };
+
+    let by_id: HashMap<u64, &ManagedUser> = existing.iter().map(|m| (m.id, m)).collect();
+
+    let mut users: Vec<ItemReport> = config
         .users
         .iter()
         .map(|user| ItemReport {
             name: user.name.clone(),
-            status: into_status(sync_user(system, user, &managed, &present)),
+            status: into_status(sync_user(system, user, &by_id, &managed, &present)),
         })
         .collect();
+
+    // Anything left tagged on the host that the configuration no longer has is
+    // an account whose user has gone. Renames have already happened, so an
+    // account still listed here under an old name is one whose id is in the
+    // configuration and is therefore not touched.
+    let wanted: HashSet<u64> = config.users.iter().map(|user| user.id).collect();
+
+    for account in &existing {
+        if wanted.contains(&account.id) {
+            continue;
+        }
+
+        let status = match remove_user(system, account) {
+            Ok(None) => continue,
+            Ok(Some(status)) => status,
+            Err(err) => into_status(Err(err)),
+        };
+
+        users.push(ItemReport {
+            name: account.name.clone(),
+            status,
+        });
+    }
 
     SyncReport {
         hostname: config.hostname.clone(),
@@ -110,6 +160,7 @@ fn check_group(system: &dyn System, group: &str) -> anyhow::Result<Status> {
 fn sync_user(
     system: &dyn System,
     user: &UserAccount,
+    by_id: &HashMap<u64, &ManagedUser>,
     managed: &BTreeSet<&str>,
     present: &BTreeSet<String>,
 ) -> anyhow::Result<Status> {
@@ -120,6 +171,9 @@ fn sync_user(
         validate::name("Group", group)?;
     }
 
+    let renamed = rename_if_needed(system, user, by_id)?;
+    let wanted_gecos = gecos(&user.full_name, user.id);
+
     let created = match system.user_id(&user.name)? {
         Some(uid) => {
             // The name exists already. If it belongs to the distribution then
@@ -129,18 +183,48 @@ fn sync_user(
             false
         }
         None => {
-            system.create_user(&user.name, &user.full_name)?;
+            system.create_user(&user.name, &user.full_name, user.id)?;
             true
         }
     };
 
-    let mut changed = created;
+    let mut changed = created || renamed;
 
-    // A freshly created user already has the right name, so there is nothing
-    // to compare against.
-    if !created && system.user_full_name(&user.name)? != user.full_name {
-        system.set_user_full_name(&user.name, &user.full_name)?;
-        changed = true;
+    // A freshly created account already carries the right GECOS, so there is
+    // nothing to compare against.
+    if !created {
+        let current = system.user_gecos(&user.name)?;
+
+        // An account this configuration names but that Starfish did not create
+        // is taken over rather than left alone, because otherwise an agent
+        // upgraded onto a host full of accounts made before tagging existed
+        // would stop managing every one of them. That does mean an unrelated
+        // local account whose name happens to collide is taken over too, so it
+        // is said out loud: whoever reads the agent's log is the person who can
+        // tell the two cases apart.
+        match tagged_id(&current) {
+            Some(id) if id == user.id => {}
+            Some(id) => warn(&format!(
+                "Account '{}' on this host is tagged for Starfish user {id}, but the \
+                 configuration gives that name to user {}. Taking the account over; \
+                 check that two users have not been given the same alias.",
+                user.name, user.id
+            )),
+            None => warn(&format!(
+                "Account '{}' already exists on this host and is not tagged \
+                 {tag}, so Starfish did not create it. Taking it over: its \
+                 full name and authorized_keys are now Starfish's. If this is \
+                 a local account that happens to share the name, rename one of \
+                 them.",
+                user.name,
+                tag = crate::system::MANAGED_TAG,
+            )),
+        }
+
+        if current != wanted_gecos {
+            system.set_user_identity(&user.name, &user.full_name, user.id)?;
+            changed = true;
+        }
     }
 
     changed |= sync_groups(system, user, managed, present)?;
@@ -153,6 +237,81 @@ fn sync_user(
     } else {
         Status::Unchanged
     })
+}
+
+/// Moves an account onto the login name the configuration now gives it.
+/// Returns whether anything was renamed.
+///
+/// This is what makes a changed alias a rename rather than a deletion and a
+/// fresh account: the uid, the home directory and everything in it stay where
+/// they are. The account is found by the id in its tag, which is the one thing
+/// about a user that does not change.
+fn rename_if_needed(
+    system: &dyn System,
+    user: &UserAccount,
+    by_id: &HashMap<u64, &ManagedUser>,
+) -> anyhow::Result<bool> {
+    let Some(existing) = by_id.get(&user.id) else {
+        return Ok(false);
+    };
+
+    if existing.name == user.name {
+        return Ok(false);
+    }
+
+    validate::name("User", &existing.name)?;
+    validate::managed_uid(&existing.name, existing.uid)?;
+
+    // Something already holds the name this account is moving to. `usermod`
+    // would refuse anyway; failing here says why, and leaves both accounts as
+    // they are rather than half moving one. The uid is checked first so that a
+    // configuration renaming somebody onto `daemon` is told what it actually
+    // did wrong.
+    if let Some(uid) = system.user_id(&user.name)? {
+        validate::managed_uid(&user.name, uid)?;
+
+        anyhow::bail!(
+            "Unable to rename '{}' to '{}': an account named '{}' already exists on this host",
+            existing.name,
+            user.name,
+            user.name
+        );
+    }
+
+    system.rename_user(&existing.name, &user.name)?;
+
+    Ok(true)
+}
+
+/// Deletes an account whose user the configuration no longer has.
+///
+/// `None` means the account was not the one that was found earlier and was
+/// left alone, which is not worth reporting: either it has already gone, or
+/// its tag has changed, and in both cases somebody else's account is at stake
+/// if this guesses wrong. Only an account still carrying the same tag is
+/// deleted.
+fn remove_user(system: &dyn System, account: &ManagedUser) -> anyhow::Result<Option<Status>> {
+    validate::name("User", &account.name)?;
+
+    let Some(uid) = system.user_id(&account.name)? else {
+        return Ok(None);
+    };
+
+    validate::managed_uid(&account.name, uid)?;
+
+    if tagged_id(&system.user_gecos(&account.name)?) != Some(account.id) {
+        return Ok(None);
+    }
+
+    system.delete_user(&account.name)?;
+
+    warn(&format!(
+        "Account '{}' was removed from this host, with its home directory, \
+         because Starfish user {} is no longer in this host's configuration.",
+        account.name, account.id
+    ));
+
+    Ok(Some(Status::Removed))
 }
 
 /// Adds the user to the groups they should be in and removes them from managed
@@ -240,15 +399,6 @@ fn authorized_keys(user: &UserAccount) -> String {
     contents
 }
 
-/// Writes a warning for the agent to pick up.
-///
-/// The helper's standard output carries the report, so this goes to standard
-/// error, which the agent captures and logs. Anything an administrator ought
-/// to see from the controller instead belongs in the report as a [`Status`].
-fn warn(message: &str) {
-    eprintln!("warning: {message}");
-}
-
 /// Turns a failed operation into a status the controller can report, keeping
 /// the whole error chain so the cause is not lost.
 fn into_status(result: anyhow::Result<Status>) -> Status {
@@ -286,7 +436,7 @@ pub(crate) mod tests {
     #[derive(Default, Clone)]
     struct FakeUser {
         uid: u32,
-        full_name: String,
+        gecos: String,
         groups: BTreeSet<String>,
         authorized_keys: Option<String>,
     }
@@ -297,17 +447,42 @@ pub(crate) mod tests {
             self
         }
 
+        /// A tagged account belonging to the user of the same name, the way a
+        /// previous sync would have left it.
+        fn with_managed_user(self, name: &str, full_name: &str, groups: &[&str]) -> Self {
+            self.with_managed_account(name, id_for(name), full_name, groups)
+        }
+
+        /// A tagged account belonging to a chosen user, for the rename and
+        /// removal tests where whose account it is, is the whole question.
+        fn with_managed_account(
+            self,
+            name: &str,
+            id: u64,
+            full_name: &str,
+            groups: &[&str],
+        ) -> Self {
+            self.with_account(
+                name,
+                validate::MIN_MANAGED_UID,
+                &gecos(full_name, id),
+                groups,
+            )
+        }
+
+        /// An account Starfish did not create: no tag, just a full name.
         fn with_user(self, name: &str, full_name: &str, groups: &[&str]) -> Self {
             self.with_account(name, validate::MIN_MANAGED_UID, full_name, groups)
         }
 
-        /// Adds a user with a chosen uid, for the system account checks.
-        fn with_account(self, name: &str, uid: u32, full_name: &str, groups: &[&str]) -> Self {
+        /// Adds a user with a chosen uid and a literal GECOS, for the system
+        /// account and tagging checks.
+        fn with_account(self, name: &str, uid: u32, gecos: &str, groups: &[&str]) -> Self {
             self.state.lock().unwrap().users.insert(
                 name.to_string(),
                 FakeUser {
                     uid,
-                    full_name: full_name.to_string(),
+                    gecos: gecos.to_string(),
                     groups: groups.iter().map(|g| g.to_string()).collect(),
                     authorized_keys: None,
                 },
@@ -345,6 +520,10 @@ pub(crate) mod tests {
             self.state.lock().unwrap().users[name].clone()
         }
 
+        fn has_user(&self, name: &str) -> bool {
+            self.state.lock().unwrap().users.contains_key(name)
+        }
+
         /// Records an action, failing it if the test asked for that.
         fn record(&self, action: String) -> anyhow::Result<()> {
             let mut state = self.state.lock().unwrap();
@@ -368,13 +547,39 @@ pub(crate) mod tests {
             Ok(self.state.lock().unwrap().users.get(user).map(|u| u.uid))
         }
 
-        fn create_user(&self, user: &str, full_name: &str) -> anyhow::Result<()> {
+        fn managed_users(&self) -> anyhow::Result<Vec<ManagedUser>> {
+            let state = self.state.lock().unwrap();
+
+            if let Some(message) = state.failures.get("managed_users") {
+                anyhow::bail!("{message}");
+            }
+
+            let mut users: Vec<ManagedUser> = state
+                .users
+                .iter()
+                .filter_map(|(name, user)| {
+                    tagged_id(&user.gecos).map(|id| ManagedUser {
+                        name: name.clone(),
+                        uid: user.uid,
+                        id,
+                    })
+                })
+                .collect();
+
+            // A `HashMap` has no order of its own, and the order accounts are
+            // removed in shows up in the report.
+            users.sort_by(|a, b| a.name.cmp(&b.name));
+
+            Ok(users)
+        }
+
+        fn create_user(&self, user: &str, full_name: &str, id: u64) -> anyhow::Result<()> {
             self.record(format!("create_user {user}"))?;
             self.state.lock().unwrap().users.insert(
                 user.to_string(),
                 FakeUser {
                     uid: validate::MIN_MANAGED_UID,
-                    full_name: full_name.to_string(),
+                    gecos: gecos(full_name, id),
                     // Ubuntu gives every new user their own primary group.
                     groups: [user.to_string()].into_iter().collect(),
                     authorized_keys: None,
@@ -384,19 +589,46 @@ pub(crate) mod tests {
             Ok(())
         }
 
-        fn user_full_name(&self, user: &str) -> anyhow::Result<String> {
-            Ok(self.state.lock().unwrap().users[user].full_name.clone())
+        fn rename_user(&self, user: &str, new_name: &str) -> anyhow::Result<()> {
+            self.record(format!("rename_user {user} {new_name}"))?;
+
+            let mut state = self.state.lock().unwrap();
+            let account = state.users.remove(user).unwrap();
+
+            state.users.insert(new_name.to_string(), account);
+
+            Ok(())
         }
 
-        fn set_user_full_name(&self, user: &str, full_name: &str) -> anyhow::Result<()> {
-            self.record(format!("set_full_name {user}"))?;
+        fn delete_user(&self, user: &str) -> anyhow::Result<()> {
+            self.record(format!("delete_user {user}"))?;
+
+            let mut state = self.state.lock().unwrap();
+
+            state.users.remove(user);
+
+            // `userdel` takes the account's private group with it, and the
+            // memberships along with the account.
+            for account in state.users.values_mut() {
+                account.groups.remove(user);
+            }
+
+            Ok(())
+        }
+
+        fn user_gecos(&self, user: &str) -> anyhow::Result<String> {
+            Ok(self.state.lock().unwrap().users[user].gecos.clone())
+        }
+
+        fn set_user_identity(&self, user: &str, full_name: &str, id: u64) -> anyhow::Result<()> {
+            self.record(format!("set_identity {user}"))?;
             self.state
                 .lock()
                 .unwrap()
                 .users
                 .get_mut(user)
                 .unwrap()
-                .full_name = full_name.to_string();
+                .gecos = gecos(full_name, id);
 
             Ok(())
         }
@@ -471,8 +703,26 @@ pub(crate) mod tests {
         }
     }
 
+    /// A stable database id for a name, so that a fixture and the account it
+    /// stands for agree on whose it is without every test spelling an id out.
+    fn id_for(name: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+
+        name.hash(&mut hasher);
+        hasher.finish()
+    }
+
     fn user(name: &str, groups: &[&str], is_sudoer: bool) -> UserAccount {
+        user_with_id(name, id_for(name), groups, is_sudoer)
+    }
+
+    /// A configured user with a chosen database id, for the rename and removal
+    /// tests, where the id is the whole point.
+    fn user_with_id(name: &str, id: u64, groups: &[&str], is_sudoer: bool) -> UserAccount {
         UserAccount {
+            id,
             name: name.to_string(),
             full_name: "Ada Lovelace".to_string(),
             email: "ada@example.com".to_string(),
@@ -692,7 +942,10 @@ pub(crate) mod tests {
         let report = sync(&system, &config(&[], vec![user("ada", &[], false)]));
 
         assert_eq!(status(&report, "ada"), Status::Updated);
-        assert_eq!(system.user("ada").full_name, "Ada Lovelace");
+        assert_eq!(
+            system.user("ada").gecos,
+            gecos("Ada Lovelace", id_for("ada"))
+        );
     }
 
     #[test]
@@ -759,7 +1012,7 @@ pub(crate) mod tests {
 
         // Nothing at all was done, to this account or to the host.
         assert!(system.actions().is_empty(), "{:?}", system.actions());
-        assert_eq!(system.user("daemon").full_name, "daemon");
+        assert_eq!(system.user("daemon").gecos, "daemon");
         assert!(!system.user("daemon").groups.contains(SUDO_GROUP));
     }
 
@@ -798,6 +1051,233 @@ pub(crate) mod tests {
 
         assert!(matches!(status(&report, "ada"), Status::Failed { .. }));
         assert!(system.actions().is_empty(), "{:?}", system.actions());
+    }
+
+    #[test]
+    fn tags_every_account_it_creates() {
+        let system = FakeSystem::default();
+
+        sync(&system, &config(&[], vec![user("ada", &[], false)]));
+
+        // The tag is what every later sync recognises the account by, so it
+        // has to go on at creation and not on some second pass.
+        assert_eq!(
+            system.user("ada").gecos,
+            format!("Ada Lovelace,,,,STARFISH-{}", id_for("ada"))
+        );
+        assert_eq!(tagged_id(&system.user("ada").gecos), Some(id_for("ada")));
+    }
+
+    #[test]
+    fn renames_an_account_when_the_alias_changes() {
+        // The host has the account under the alias the user had yesterday.
+        let system = FakeSystem::default()
+            .with_group("developers")
+            .with_managed_account("adalove", 42, "Ada Lovelace", &["adalove", "developers"]);
+
+        let report = sync(
+            &system,
+            &config(
+                &["developers"],
+                vec![user_with_id("ada", 42, &["developers"], false)],
+            ),
+        );
+
+        assert_eq!(status(&report, "ada"), Status::Updated);
+        assert!(system.has_user("ada"));
+        assert!(
+            !system.has_user("adalove"),
+            "the old account was left behind"
+        );
+
+        // Renamed, not rebuilt: nothing was created and nothing was deleted,
+        // which is what keeps the uid and the home directory.
+        let actions = system.actions();
+
+        assert!(
+            actions.contains(&"rename_user adalove ada".to_string()),
+            "{actions:?}"
+        );
+        assert!(
+            !actions.iter().any(|a| a.starts_with("create_user")),
+            "the account was rebuilt rather than renamed: {actions:?}"
+        );
+        assert!(
+            !actions.iter().any(|a| a.starts_with("delete_user")),
+            "the old account was deleted: {actions:?}"
+        );
+        assert_eq!(system.user("ada").uid, validate::MIN_MANAGED_UID);
+        assert_eq!(tagged_id(&system.user("ada").gecos), Some(42));
+    }
+
+    #[test]
+    fn refuses_to_rename_onto_a_name_that_is_already_taken() {
+        // Somebody else's account already holds the name this user is moving
+        // to. Renaming would either fail or, worse, collide.
+        let system = FakeSystem::default()
+            .with_managed_account("adalove", 42, "Ada Lovelace", &["adalove"])
+            .with_user("ada", "Ada Other", &["ada"]);
+
+        let report = sync(
+            &system,
+            &config(&[], vec![user_with_id("ada", 42, &[], false)]),
+        );
+
+        assert!(
+            matches!(status(&report, "ada"), Status::Failed { message } if message.contains("already exists")),
+            "unexpected status: {:?}",
+            status(&report, "ada")
+        );
+
+        // Both accounts are left exactly as they were.
+        assert!(system.has_user("adalove"));
+        assert_eq!(system.user("ada").gecos, "Ada Other");
+        assert!(
+            !system
+                .actions()
+                .iter()
+                .any(|a| a.starts_with("rename_user")),
+            "{:?}",
+            system.actions()
+        );
+    }
+
+    #[test]
+    fn refuses_to_rename_an_account_onto_a_system_one() {
+        let system = FakeSystem::default()
+            .with_managed_account("adalove", 42, "Ada Lovelace", &["adalove"])
+            .with_account("daemon", 1, "daemon", &["daemon"]);
+
+        let report = sync(
+            &system,
+            &config(&[], vec![user_with_id("daemon", 42, &[], false)]),
+        );
+
+        assert!(
+            matches!(status(&report, "daemon"), Status::Failed { message } if message.contains("system account")),
+            "unexpected status: {:?}",
+            status(&report, "daemon")
+        );
+        assert_eq!(system.user("daemon").gecos, "daemon");
+        assert!(system.has_user("adalove"), "the renamed account was lost");
+    }
+
+    #[test]
+    fn removes_an_account_whose_user_is_no_longer_configured() {
+        let system = FakeSystem::default()
+            .with_managed_account("bob", 7, "Bob Bobson", &["bob"])
+            .with_managed_user("ada", "Ada Lovelace", &["ada"]);
+
+        let report = sync(&system, &config(&[], vec![user("ada", &[], false)]));
+
+        assert_eq!(status(&report, "bob"), Status::Removed);
+        assert!(!system.has_user("bob"), "the account is still there");
+        assert!(
+            system.actions().contains(&"delete_user bob".to_string()),
+            "{:?}",
+            system.actions()
+        );
+
+        // Everybody still in the configuration is untouched by it.
+        assert!(system.has_user("ada"));
+    }
+
+    #[test]
+    fn never_removes_an_account_starfish_did_not_create() {
+        // No tag, so Starfish has no reason to believe this account is its to
+        // delete, however little the configuration knows about it.
+        let system = FakeSystem::default().with_user("localadmin", "Local Admin", &["localadmin"]);
+
+        let report = sync(&system, &config(&[], vec![user("ada", &[], false)]));
+
+        assert!(system.has_user("localadmin"));
+        assert!(
+            report.users.iter().all(|item| item.name != "localadmin"),
+            "an account Starfish does not manage was reported on: {:?}",
+            report.users
+        );
+        assert!(
+            !system
+                .actions()
+                .iter()
+                .any(|action| action.contains("localadmin")),
+            "{:?}",
+            system.actions()
+        );
+    }
+
+    #[test]
+    fn never_removes_a_system_account_however_it_is_tagged() {
+        // A tag on a system account, whether somebody put it there by hand or
+        // an earlier configuration did, must not be enough to delete it.
+        let system = FakeSystem::default().with_account("daemon", 1, &gecos("Daemon", 7), &[]);
+
+        let report = sync(&system, &config(&[], vec![user("ada", &[], false)]));
+
+        assert!(
+            matches!(status(&report, "daemon"), Status::Failed { message } if message.contains("system account")),
+            "unexpected status: {:?}",
+            status(&report, "daemon")
+        );
+        assert!(system.has_user("daemon"), "a system account was deleted");
+    }
+
+    #[test]
+    fn adopts_an_untagged_account_that_shares_a_name() {
+        // What every host looks like on the first sync after an upgrade: the
+        // accounts are Starfish's, but were made before there was a tag to put
+        // on them. Taking them over is what keeps them managed.
+        let system = FakeSystem::default().with_user("ada", "Ada Lovelace", &["ada"]);
+
+        let report = sync(&system, &config(&[], vec![user("ada", &[], false)]));
+
+        assert_eq!(status(&report, "ada"), Status::Updated);
+        assert_eq!(tagged_id(&system.user("ada").gecos), Some(id_for("ada")));
+        assert!(
+            !system
+                .actions()
+                .iter()
+                .any(|a| a.starts_with("create_user") || a.starts_with("delete_user")),
+            "the account was rebuilt rather than adopted: {:?}",
+            system.actions()
+        );
+
+        // And from here on it is an ordinary managed account: a second sync
+        // has nothing left to do, and dropping the user removes it.
+        assert_eq!(
+            status(
+                &sync(&system, &config(&[], vec![user("ada", &[], false)])),
+                "ada"
+            ),
+            Status::Unchanged
+        );
+
+        let report = sync(&system, &config(&[], vec![]));
+
+        assert_eq!(status(&report, "ada"), Status::Removed);
+    }
+
+    #[test]
+    fn removes_nobody_when_the_host_cannot_be_read() {
+        // Without the list of tagged accounts there is no way to tell an
+        // account whose user has gone from one Starfish never created, so the
+        // sync does the additive half and leaves every account alone.
+        let system = FakeSystem::default()
+            .with_managed_account("bob", 7, "Bob Bobson", &["bob"])
+            .failing("managed_users", "getent passwd failed");
+
+        let report = sync(&system, &config(&[], vec![user("ada", &[], false)]));
+
+        assert_eq!(status(&report, "ada"), Status::Created);
+        assert!(system.has_user("bob"), "an account was removed blindly");
+        assert!(
+            !system
+                .actions()
+                .iter()
+                .any(|a| a.starts_with("delete_user")),
+            "{:?}",
+            system.actions()
+        );
     }
 
     #[test]

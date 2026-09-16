@@ -48,14 +48,23 @@ pub fn name(kind: &str, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Checks a full name before it becomes a `GECOS` field.
+/// Checks a full name before it goes into a `GECOS` field.
 ///
-/// `GECOS` is colon separated inside `/etc/passwd`, so a colon or a newline in
-/// one would corrupt the file.
+/// `GECOS` is one colon separated field inside `/etc/passwd`, so a colon or a
+/// newline in a name would corrupt the file. A comma is out for a different
+/// reason: `GECOS` is itself comma separated, and the last of those fields is
+/// where [`crate::system::MANAGED_TAG`] lives, so a comma in a name would
+/// shift the rest of the fields along and leave only part of the name where
+/// everything looks for it.
+///
+/// This is the same set `shadow` refuses — `:`, `,`, `=` and a newline — so a
+/// name that gets past here is one `useradd` and `chfn` will accept. Checking
+/// it here turns what would be an unexplained non-zero exit into a report
+/// entry that says which name was wrong and why.
 pub fn full_name(full_name: &str) -> anyhow::Result<()> {
     if let Some(bad) = full_name
         .chars()
-        .find(|c| *c == ':' || *c == '\n' || c.is_control())
+        .find(|c| *c == ':' || *c == ',' || *c == '=' || *c == '\n' || c.is_control())
     {
         bail!("Full name '{full_name}' holds a character that is not allowed: {bad:?}");
     }
@@ -107,6 +116,10 @@ mod tests {
     fn rejects_a_full_name_that_would_corrupt_passwd() {
         assert!(full_name("Ada:Lovelace").is_err());
         assert!(full_name("Ada\nLovelace").is_err());
+        // A comma would push the rest of the GECOS fields along, taking the
+        // managed tag with them.
+        assert!(full_name("Lovelace, Ada").is_err());
+        assert!(full_name("Ada=Lovelace").is_err());
         full_name("Ada Lovelace").unwrap();
         full_name("Seán Ó Briain").unwrap();
     }

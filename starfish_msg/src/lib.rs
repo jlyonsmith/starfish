@@ -23,8 +23,10 @@ use serde::{Serialize, de::DeserializeOwned};
 /// Adding a *field* to a message does not need a bump, because `to_vec_named`
 /// matches by name and an unknown one is ignored. Version 2 adds
 /// [`Status::Missing`], which is an enum variant rather than a field: a
-/// version 1 controller cannot decode a report containing it at all.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// version 1 controller cannot decode a report containing it at all. Version 3
+/// adds [`Status::Removed`] for the same reason; [`UserAccount::id`], which
+/// arrived with it, is only a field and would not have needed one.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -76,6 +78,7 @@ mod tests {
                 name: "developers".to_string(),
             }],
             users: vec![UserAccount {
+                id: 1,
                 name: "jls".to_string(),
                 full_name: "John Lyon-Smith".to_string(),
                 email: "john@lyon-smith.org".to_string(),

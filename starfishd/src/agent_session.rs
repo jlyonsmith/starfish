@@ -331,6 +331,21 @@ fn log_sync_report(host: &Host, report: &SyncReport) {
         }
     }
 
+    // Deleting an account, and its home directory with it, is the most
+    // destructive thing a sync does. It follows from a user leaving a host
+    // group, which is an ordinary enough edit that whoever made it may not
+    // have expected this, so it is logged whether or not anything failed.
+    for item in &report.users {
+        if item.status == starfish_msg::Status::Removed {
+            log::warn!(
+                "Host '{}': account '{}' was removed, along with its home directory, \
+                 because its user is no longer in the host's configuration",
+                host.hostname,
+                item.name
+            );
+        }
+    }
+
     let failures: Vec<_> = report
         .groups
         .iter()

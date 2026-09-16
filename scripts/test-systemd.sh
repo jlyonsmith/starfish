@@ -188,8 +188,13 @@ check "the agent process is unprivileged" "starfish" \
 
 info "Checking the host was actually configured"
 
+# GECOS carries the full name in its first comma separated field and the tag
+# that makes the account Starfish's in its last, so the two are checked apart.
+# The tag's id is whatever the database assigned, hence the pattern.
 check "the user exists" "Ada Lovelace" \
-    "$(limactl shell "$VM" getent passwd ada | cut -d: -f5)"
+    "$(limactl shell "$VM" sh -c 'getent passwd ada | cut -d: -f5 | cut -d, -f1')"
+check "the account is tagged as Starfish managed" "0" \
+    "$(limactl shell "$VM" sh -c 'getent passwd ada | cut -d: -f5 | grep -qE ",STARFISH-[0-9]+$"; echo $?')"
 check "the user joined the existing security group" "0" \
     "$(limactl shell "$VM" sh -c 'id -nG ada | grep -qw developers; echo $?')"
 # Created by install-agent.sh rather than by a sync, which is the only reason
