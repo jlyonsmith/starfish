@@ -23,34 +23,25 @@ ExecStart=/usr/local/bin/starfish-agent --config /etc/starfish_agent.conf
 Restart=always
 RestartSec=5
 
-# The agent handles TLS and decodes messages from the network, so it is the part
-# worth confining.
-#
-# There is a hard limit on how far that can go.  The helper is started by sudo
-# as a child of this unit, so it inherits this mount namespace: anything that
-# makes /etc read-only stops useradd from locking /etc/passwd, and hiding /home
-# stops authorized_keys being written.  `ProtectSystem=strict` and
-# `ProtectHome=yes` both break account management outright.  `yes` keeps /usr
-# and /boot read-only, which is as much as this shape of deployment allows.
-#
-# Confining the agent properly would mean not starting the helper from inside
-# this unit at all: run it as its own root service behind a socket, and let this
-# one talk to it.  See the Privileges section of the README.
+# The starfish-sync helper is started by sudo as a child of this unit.
+# If you are having problems running the do `cat /proc/<pid>/status and
+# check the `NoNewPrivs` flag is not set.
+
+# These options are disabled to allow sudo privilege escalation
+NoNewPrivileges=no
+RestrictNamespaces=no
+RestrictRealtime=no
+RestrictSUIDSGID=no
+LockPersonality=no
+MemoryDenyWriteExecute=no
+ProtectKernelTunables=no
+ProtectKernelModules=no
+
+# These options are safe to keep and will not force NoNewPrivileges
 ProtectSystem=yes
 ProtectHome=no
 PrivateTmp=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictNamespaces=yes
-RestrictRealtime=yes
-RestrictSUIDSGID=yes
-LockPersonality=yes
-MemoryDenyWriteExecute=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-
-# NoNewPrivileges is deliberately absent: setting it would stop sudo from
-# raising privileges, and the agent would be unable to apply anything.
 
 [Install]
 WantedBy=multi-user.target
