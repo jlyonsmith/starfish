@@ -3538,7 +3538,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "starfish_admin"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3561,7 +3561,7 @@ dependencies = [
 
 [[package]]
 name = "starfish_agent"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3603,7 +3603,7 @@ dependencies = [
 
 [[package]]
 name = "starfish_sync"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "duct",
@@ -3613,7 +3613,7 @@ dependencies = [
 
 [[package]]
 name = "starfishd"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
