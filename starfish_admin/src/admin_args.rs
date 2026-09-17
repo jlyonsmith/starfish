@@ -65,7 +65,6 @@ pub enum Command {
     /// Tell the controller to push configuration to its agents now
     Refresh {
         /// Refresh one host.  Every host is refreshed when this is omitted.
-        #[arg(long)]
         hostname: Option<String>,
     },
 }
@@ -88,6 +87,7 @@ fn parse_ssh_key(s: &str) -> Result<(String, String), String> {
 pub enum UserOp {
     /// Add a new user
     Add {
+        #[arg(value_name = "USER_ALIAS")]
         alias: String,
         #[arg(long, visible_alias = "fn")]
         first_name: String,
@@ -104,10 +104,14 @@ pub enum UserOp {
     List {},
 
     /// Show one user, with their keys, groups and hosts
-    Show { alias: String },
+    Show {
+        #[arg(value_name = "USER_ALIAS")]
+        alias: String,
+    },
 
     /// Change a user's details
     Update {
+        #[arg(value_name = "USER_ALIAS")]
         alias: String,
         #[arg(long, visible_alias = "na")]
         new_alias: Option<String>,
@@ -120,21 +124,26 @@ pub enum UserOp {
     },
 
     /// Remove a user, along with their keys and memberships
-    Remove { alias: String },
+    Remove {
+        #[arg(value_name = "USER_ALIAS")]
+        alias: String,
+    },
 
     /// Add an SSH public key to a user
     AddKey {
+        #[arg(value_name = "USER_ALIAS")]
         alias: String,
         /// A label for the key, so it can be told apart from the others
-        #[arg(long)]
+        #[arg(long, value_name = "KEY_NAME")]
         name: String,
         /// The public key, in authorized_keys form
-        #[arg(long)]
+        #[arg(long, value_name = "KEY_VALUE")]
         key: String,
     },
 
     /// Remove one of a user's SSH public keys
     RemoveKey {
+        #[arg(value_name = "USER_ALIAS")]
         alias: String,
         #[arg(long)]
         name: String,
@@ -144,19 +153,29 @@ pub enum UserOp {
 #[derive(Subcommand)]
 pub enum HostGroupOp {
     /// Add a new host group
-    Add { name: String },
+    Add {
+        #[arg(value_name = "HOST_GROUP_NAME")]
+        name: String,
+    },
 
     /// List all host groups
     List {},
 
     /// Show information about a host group
-    Show { name: String },
+    Show {
+        #[arg(value_name = "HOST_GROUP_NAME")]
+        name: String,
+    },
 
     /// Remove an empty host group
-    Remove { name: String },
+    Remove {
+        #[arg(value_name = "HOST_GROUP_NAME")]
+        name: String,
+    },
 
     /// Give a user accounts on every host in the group
     AddUser {
+        #[arg(value_name = "HOST_GROUP_NAME")]
         name: String,
         #[arg(long, short)]
         alias: String,
@@ -173,10 +192,30 @@ pub enum HostGroupOp {
         security_groups: Vec<String>,
     },
 
+    /// Update a user's accounts on every host in the group
+    UpdateUser {
+        #[arg(value_name = "HOST_GROUP_NAME")]
+        name: String,
+        #[arg(long, short, value_name = "USER_ALIAS")]
+        alias: String,
+        /// Grant the user sudo on the group's hosts
+        #[arg(long)]
+        sudoer: bool,
+        /// A Linux group to put the user in on the group's hosts.  May be
+        /// repeated.  Repeating the command replaces the whole set.
+        #[arg(
+            long = "security-group",
+            visible_alias = "sg",
+            value_name = "SECURITY_GROUPS"
+        )]
+        security_groups: Vec<String>,
+    },
+
     /// Take a user's accounts on the group's hosts away
     RemoveUser {
+        #[arg(value_name = "HOST_GROUP_NAME")]
         name: String,
-        #[arg(long, short)]
+        #[arg(long, short, value_name = "USER_ALIAS")]
         alias: String,
     },
 }
@@ -185,6 +224,7 @@ pub enum HostGroupOp {
 pub enum HostOp {
     /// Add a host and generate the key its agent authenticates with
     Add {
+        #[arg(value_name = "HOSTNAME")]
         hostname: String,
         #[arg(long, visible_alias = "hg", value_name = "GROUP")]
         host_group: String,
@@ -201,6 +241,7 @@ pub enum HostOp {
 
     /// Change a host's details
     Update {
+        #[arg(value_name = "HOSTNAME")]
         hostname: String,
         #[arg(long)]
         info: Option<String>,
@@ -209,8 +250,14 @@ pub enum HostOp {
     },
 
     /// Remove a host
-    Remove { hostname: String },
+    Remove {
+        #[arg(value_name = "HOSTNAME")]
+        hostname: String,
+    },
 
     /// Replace a host's agent key
-    Rekey { hostname: String },
+    Rekey {
+        #[arg(value_name = "HOSTNAME")]
+        hostname: String,
+    },
 }

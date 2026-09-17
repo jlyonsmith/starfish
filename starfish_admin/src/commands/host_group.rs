@@ -18,7 +18,13 @@ pub async fn run(db: &mut Db, op: &HostGroupOp) -> anyhow::Result<()> {
             alias,
             sudoer,
             security_groups,
-        } => add_user(db, name, alias, *sudoer, security_groups).await,
+        } => add_or_update_user(db, name, alias, *sudoer, security_groups).await,
+        HostGroupOp::UpdateUser {
+            name,
+            alias,
+            sudoer,
+            security_groups,
+        } => add_or_update_user(db, name, alias, *sudoer, security_groups).await,
         HostGroupOp::RemoveUser { name, alias } => remove_user(db, name, alias).await,
     }
 }
@@ -215,7 +221,7 @@ async fn remove(db: &mut Db, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn add_user(
+async fn add_or_update_user(
     db: &mut Db,
     name: &str,
     alias: &str,

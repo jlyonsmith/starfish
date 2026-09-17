@@ -1,6 +1,6 @@
 # Starfish
 
-Starfish synchronizes user accounts from a database onto Linux hosts. You describe the hosts and group them. You then you describe users and their SSH keys, and finally assign those users to host groups as sudoers and with specific Linux security group membership. Agents running on each host securely synchronize the host users to match over secure WebSockets.
+Starfish is a system that allows you to easily synchronize users, SSH keys, security groups, and sudo privileges across Linux systems.
 
 ## How It Works
 

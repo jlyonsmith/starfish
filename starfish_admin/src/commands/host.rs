@@ -60,10 +60,7 @@ async fn add(db: &mut Db, hostname: &str, host_group: &str, info: &str) -> anyho
         .await
         .context("Unable to add the host")?;
 
-    println!(
-        "Added host '{}' ({}) to '{host_group}'",
-        host.hostname, host.id
-    );
+    println!("Added host '{}' to '{host_group}'", host.hostname);
     println!();
     println!("Agent key: {agent_key}");
     println!();
