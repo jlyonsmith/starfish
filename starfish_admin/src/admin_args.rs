@@ -182,8 +182,8 @@ pub enum HostGroupOp {
         /// Grant the user sudo on the group's hosts
         #[arg(long)]
         sudoer: bool,
-        /// A Linux group to put the user in on the group's hosts.  May be
-        /// repeated.  Repeating the command replaces the whole set.
+        /// One or more Linux groups to put the user in on the group's hosts.  May be
+        /// repeated or separated by commas.
         #[arg(
             long = "security-group",
             visible_alias = "sg",
@@ -201,8 +201,8 @@ pub enum HostGroupOp {
         /// Grant the user sudo on the group's hosts
         #[arg(long)]
         sudoer: bool,
-        /// A Linux group to put the user in on the group's hosts.  May be
-        /// repeated.  Repeating the command replaces the whole set.
+        /// One or more Linux groups to put the user in on the group's hosts.  May be
+        /// repeated or separated by commas.
         #[arg(
             long = "security-group",
             visible_alias = "sg",
