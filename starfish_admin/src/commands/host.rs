@@ -39,9 +39,10 @@ pub async fn run(db: &mut Db, op: &HostOp) -> anyhow::Result<()> {
         HostOp::Show { hostname } => show(db, hostname).await,
         HostOp::Update {
             hostname,
+            new_hostname,
             info,
             host_group,
-        } => update(db, hostname, info, host_group).await,
+        } => update(db, hostname, new_hostname, info, host_group).await,
         HostOp::Remove { hostname } => remove(db, hostname).await,
         HostOp::Rekey { hostname } => rekey(db, hostname).await,
     }
@@ -158,15 +159,20 @@ async fn show(db: &mut Db, hostname: &str) -> anyhow::Result<()> {
 async fn update(
     db: &mut Db,
     hostname: &str,
+    new_hostname: &Option<String>,
     info: &Option<String>,
     host_group: &Option<String>,
 ) -> anyhow::Result<()> {
-    if info.is_none() && host_group.is_none() {
-        bail!("Nothing to update; pass at least one of --info or --host-group");
+    if info.is_none() && host_group.is_none() && new_hostname.is_none() {
+        bail!("Nothing to update; pass at least one of --info, --host-group, or --new-hostname");
     }
 
     let host = find_host(db, hostname).await?;
     let mut update = Host::update_by_id(host.id);
+
+    if let Some(new_hostname) = new_hostname {
+        update = update.hostname(new_hostname);
+    }
 
     if let Some(info) = info {
         update = update.info(info);

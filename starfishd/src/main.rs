@@ -9,18 +9,17 @@ mod server_args;
 mod server_config;
 mod tls;
 
-use server_args::ServerArgs;
-
-pub use server::Server;
-pub use server_config::ServerConfig;
-
 use anyhow::Context;
 use clap::Parser;
 use figment::{
     Figment,
     providers::{Format, Serialized, Toml},
 };
+use server_args::ServerArgs;
 use single_instance::SingleInstance;
+
+pub use server::Server;
+pub use server_config::ServerConfig;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
