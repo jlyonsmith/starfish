@@ -8,14 +8,9 @@ use admin_args::*;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = match AdminArgs::try_parse() {
-        Ok(m) => m,
-        Err(err) => {
-            // Help and version come back as an error
-            eprintln!("{err}");
-            return Ok(());
-        }
-    };
+    // Exits 0 for help and version, and 2 for a usage error, so a script running
+    // under `set -e` stops at a bad argument rather than carrying on.
+    let args = AdminArgs::parse();
 
     // Refreshing only talks to the controller, so it does not need, and should
     // not insist on, a working database connection.

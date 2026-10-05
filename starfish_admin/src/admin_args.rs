@@ -203,7 +203,7 @@ pub enum HostGroupOp {
         /// One or more Linux groups to put the user in on the group's hosts.  May be
         /// repeated or separated by commas.
         #[arg(
-            long,
+            long = "security-group",
             visible_alias = "sg",
             value_name = "SECURITY_GROUPS",
             value_delimiter = ',',
@@ -226,7 +226,7 @@ pub enum HostGroupOp {
         /// One or more Linux groups to put the user in on the group's hosts.  May be
         /// repeated or separated by commas.
         #[arg(
-            long,
+            long = "security-group",
             visible_alias = "sg",
             value_name = "SECURITY_GROUPS",
             value_delimiter = ',',
