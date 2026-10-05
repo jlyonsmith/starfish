@@ -1,7 +1,7 @@
 use crate::admin_args::UserOp;
 use crate::commands::{DEFAULT_TABLE_STYLE, find_user, format_time};
 use anyhow::{Context, bail};
-use starfish_db::{HostGroup, HostGroupUser, SshKey, User};
+use starfish_db::{HostGroupUser, SshKey, User};
 use std::iter;
 use tabled::{Table, derive::display};
 use toasty::Db;
@@ -76,24 +76,18 @@ async fn list(db: &mut Db) -> anyhow::Result<()> {
 
     let users = User::all()
         .order_by(User::fields().alias().asc())
+        .include(User::fields().host_groups())
         .exec(db)
         .await
         .context("Unable to read users")?;
     let mut rows = Vec::<UserListRow<'_>>::with_capacity(users.len());
 
     for user in &users {
-        let host_group_users = HostGroupUser::filter_by_user_id(user.id)
-            .exec(db)
-            .await
-            .context("Unable to read the user's host groups")?;
         let mut group_names = Vec::<String>::new();
+        let host_groups = user.host_groups.get();
 
-        for host_group_user in host_group_users {
-            let group = HostGroup::get_by_id(db, host_group_user.host_group_id)
-                .await
-                .context("Unable to read a host group")?;
-
-            group_names.push(group.name.clone());
+        for host_group in &*host_groups {
+            group_names.push(host_group.name.clone());
         }
 
         rows.push(UserListRow {
@@ -132,6 +126,8 @@ async fn show(db: &mut Db, alias: &str) -> anyhow::Result<()> {
     struct UserHostGroupRow<'a> {
         host_group: String,
         sudoer: &'a str,
+        #[tabled(rename = "Num SG's")]
+        num_security_groups: usize,
         security_groups: String,
         #[tabled(display("format_time"))]
         created_at: &'a jiff::Timestamp,
@@ -179,18 +175,16 @@ async fn show(db: &mut Db, alias: &str) -> anyhow::Result<()> {
     println!("{}\n", table.with(DEFAULT_TABLE_STYLE));
 
     let host_group_users = HostGroupUser::filter_by_user_id(user.id)
+        .include(HostGroupUser::fields().host_group())
         .exec(db)
         .await
         .context("Unable to read the user's host groups")?;
     let mut rows = Vec::<UserHostGroupRow>::new();
 
     for host_group_user in &host_group_users {
-        let group = HostGroup::get_by_id(db, host_group_user.host_group_id)
-            .await
-            .context("Unable to read a host group")?;
-
         rows.push(UserHostGroupRow {
-            host_group: group.name.clone(),
+            host_group: host_group_user.host_group.get().name.clone(),
+            num_security_groups: host_group_user.security_groups.len(),
             security_groups: host_group_user
                 .security_groups
                 .iter()

@@ -1,4 +1,4 @@
-//! One module per group of commands, plus the lookups they share.
+//! Commands
 
 pub mod host;
 pub mod host_group;

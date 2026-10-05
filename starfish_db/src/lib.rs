@@ -65,7 +65,6 @@ pub struct HostGroup {
 
     #[has_many]
     pub hosts: toasty::Deferred<Vec<Host>>,
-
     #[has_many]
     pub host_group_users: toasty::Deferred<Vec<HostGroupUser>>,
     #[has_many(via = host_group_users.user)]

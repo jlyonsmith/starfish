@@ -1,10 +1,10 @@
 use crate::admin_args::HostGroupOp;
 use crate::commands::{DEFAULT_TABLE_STYLE, find_host_group, find_user, format_time};
 use anyhow::{Context, bail};
-use starfish_db::{Host, HostGroup, HostGroupUser, User};
+use starfish_db::{Host, HostGroup, HostGroupUser};
 use std::collections::BTreeSet;
 use std::iter;
-use tabled::Table;
+use tabled::{Table, derive::display};
 use toasty::Db;
 
 pub async fn run(db: &mut Db, op: &HostGroupOp) -> anyhow::Result<()> {
@@ -47,6 +47,7 @@ async fn list(db: &mut Db) -> anyhow::Result<()> {
     struct HostGroupRow<'a> {
         name: &'a str,
         num_hosts: usize,
+        #[tabled(display("display::wrap", 25))]
         hosts: String,
         num_users: usize,
         users: String,
@@ -57,6 +58,9 @@ async fn list(db: &mut Db) -> anyhow::Result<()> {
     }
 
     let groups = HostGroup::all()
+        .include(HostGroup::fields().hosts())
+        .include(HostGroup::fields().host_group_users())
+        .include(HostGroup::fields().users())
         .order_by(HostGroup::fields().name().asc())
         .exec(db)
         .await
@@ -64,33 +68,24 @@ async fn list(db: &mut Db) -> anyhow::Result<()> {
     let mut rows = Vec::with_capacity(groups.len());
 
     for group in &groups {
-        let hosts = Host::filter_by_host_group_id(group.id)
-            .exec(db)
-            .await
-            .context("Unable to read the group's hosts")?;
-        let host_group_users = HostGroupUser::filter_by_host_group_id(group.id)
-            .exec(db)
-            .await
-            .context("Unable to read the group's users")?;
-        let mut users = Vec::<String>::with_capacity(host_group_users.len());
-
-        for host_group_user in &host_group_users {
-            let user = User::get_by_id(db, host_group_user.user_id)
-                .await
-                .context("Unable to read the user")?;
-            users.push(user.alias.clone());
-        }
-
         rows.push(HostGroupRow {
             name: &group.name,
-            num_hosts: host_group_users.len(),
-            hosts: hosts
+            num_hosts: group.hosts.get().len(),
+            hosts: group
+                .hosts
+                .get()
                 .iter()
                 .map(|h| h.hostname.clone())
                 .collect::<Vec<_>>()
                 .join(", "),
-            num_users: host_group_users.len(),
-            users: users.join(", "),
+            num_users: group.users.get().len(),
+            users: group
+                .users
+                .get()
+                .iter()
+                .map(|u| u.alias.clone())
+                .collect::<Vec<_>>()
+                .join(", "),
             created_at: &group.created_at,
             updated_at: &group.updated_at,
         });
@@ -128,6 +123,8 @@ async fn show(db: &mut Db, name: &str) -> anyhow::Result<()> {
     #[tabled(rename_all = "Upper Title Case")]
     struct UserRow<'a> {
         alias: String,
+        #[tabled(rename = "Num SG's")]
+        num_security_groups: usize,
         security_groups: String,
         sudoer: &'static str,
         #[tabled(display("format_time"))]
@@ -160,18 +157,16 @@ async fn show(db: &mut Db, name: &str) -> anyhow::Result<()> {
     println!("{}\n", table.with(DEFAULT_TABLE_STYLE));
 
     let host_group_users = HostGroupUser::filter_by_host_group_id(group.id)
+        .include(HostGroupUser::fields().user())
         .exec(db)
         .await
         .context("Unable to read the group's users")?;
     let mut rows = Vec::<UserRow>::with_capacity(host_group_users.len());
 
     for host_group_user in &host_group_users {
-        let user = User::get_by_id(db, host_group_user.user_id)
-            .await
-            .context("Cannot get user")?;
-
         rows.push(UserRow {
-            alias: user.alias.clone(),
+            alias: host_group_user.user.get().alias.clone(),
+            num_security_groups: host_group_user.security_groups.len(),
             security_groups: host_group_user.security_groups.join(", "),
             sudoer: if host_group_user.is_sudoer {
                 "Yes"
@@ -257,20 +252,18 @@ async fn add_or_update_user(
             .context("Unable to update the membership")?;
 
         println!("Updated '{alias}' in host group '{name}'");
+    } else {
+        HostGroupUser::create()
+            .host_group_id(group.id)
+            .user_id(user.id)
+            .is_sudoer(sudoer)
+            .security_groups(security_groups)
+            .exec(db)
+            .await
+            .context("Unable to add the user to the host group")?;
 
-        return Ok(());
+        println!("Added '{alias}' to host group '{name}'");
     }
-
-    HostGroupUser::create()
-        .host_group_id(group.id)
-        .user_id(user.id)
-        .is_sudoer(sudoer)
-        .security_groups(security_groups)
-        .exec(db)
-        .await
-        .context("Unable to add the user to the host group")?;
-
-    println!("Added '{alias}' to host group '{name}'");
 
     Ok(())
 }

@@ -90,19 +90,16 @@ async fn list(db: &mut Db) -> anyhow::Result<()> {
 
     let hosts = Host::all()
         .order_by(Host::fields().hostname().asc())
+        .include(Host::fields().host_group())
         .exec(db)
         .await
         .context("Unable to read hosts")?;
     let mut rows = Vec::<HostRow<'_>>::with_capacity(hosts.len());
 
     for host in &hosts {
-        let group = HostGroup::get_by_id(db, host.host_group_id)
-            .await
-            .context("Unable to read the host's group")?;
-
         rows.push(HostRow {
             hostname: &host.hostname,
-            host_group: group.name.clone(),
+            host_group: host.host_group.get().name.clone(),
             info: &host.info,
             health: get_health(&host.next_heartbeat_at).to_string(),
             contacted_at: get_contacted_at(&host.contacted_at).to_string(),
